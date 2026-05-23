@@ -4,6 +4,7 @@ sys.dont_write_bytecode = True
 
 import argparse
 import atexit
+import errno
 import glob
 import json
 import hashlib
@@ -944,7 +945,32 @@ button:hover:not(:disabled) { opacity: .8; }
 
 _SHARED_JS = """\
 function esc(value) { return String(value).replace(/[&<>"']/g, (ch) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])); }
-function urlId(value) { return encodeURIComponent(String(value)); }\
+function urlId(value) { return encodeURIComponent(String(value)); }
+(function () {
+  var POP = 'dedup_popup';
+  function popupFeatures() {
+    var w = Math.round(screen.width * 0.60);
+    var h = Math.round(screen.height * 0.60);
+    var left = Math.round((screen.width - w) / 2);
+    var top = Math.round((screen.height - h) / 2);
+    return 'width=' + w + ',height=' + h + ',left=' + left + ',top=' + top + ',resizable=yes,scrollbars=yes';
+  }
+  function openPopup() {
+    return window.open(location.href, POP, popupFeatures());
+  }
+  function showPopupOpened() {
+    document.body.innerHTML = '<main style="display:flex;align-items:center;justify-content:center;height:100vh;text-align:center;padding:20px;"><div><h1>Opened in review window</h1><p>Continue in the smaller review window.</p><button id="dedupReopenPopup">Reopen Review Window</button></div></main>';
+    document.getElementById('dedupReopenPopup').addEventListener('click', openPopup);
+  }
+  if (window.name !== POP) {
+    var pw = openPopup();
+    if (pw) {
+      window.__DEDUP_POPUP_OPENED__ = true;
+      window.close();
+      setTimeout(showPopupOpened, 100);
+    }
+  }
+})();\
 """
 
 
@@ -1878,7 +1904,7 @@ async function init() {
   });
   render();
 }
-init();
+if (!window.__DEDUP_POPUP_OPENED__) init();
 </script>
 </body>
 </html>""")
@@ -2165,8 +2191,18 @@ $wshell.AppActivate({os.getppid()})
             pass
 
 
-def _run_browser_session(state, handler_factory, url_label, cleanup=None):
-    server = ThreadingHTTPServer(("127.0.0.1", 0), handler_factory(state))
+def _bind_server(handler, port):
+    try:
+        return ThreadingHTTPServer(("127.0.0.1", port), handler)
+    except OSError as e:
+        if e.errno != errno.EADDRINUSE:
+            raise
+        print(f"Port {port} is busy, using a random port instead.", flush=True)
+        return ThreadingHTTPServer(("127.0.0.1", 0), handler)
+
+
+def _run_browser_session(state, handler_factory, url_label, cleanup=None, port=7979):
+    server = _bind_server(handler_factory(state), port)
     url = f"http://127.0.0.1:{server.server_port}/"
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
@@ -2192,14 +2228,14 @@ def _run_browser_session(state, handler_factory, url_label, cleanup=None):
     return state.selected_paths
 
 
-def select_files_in_browser(duplicate_groups, require_move_confirmation=False):
+def select_files_in_browser(duplicate_groups, require_move_confirmation=False, port=7979):
     state = BrowserSelectionState(duplicate_groups, require_move_confirmation)
     def cleanup():
         with state.cache_lock:
             state.thumbnail_cache.clear()
             state.thumbnail_inflight.clear()
         get_video_duration.cache_clear()
-    return _run_browser_session(state, make_browser_handler, "Browser review UI", cleanup=cleanup)
+    return _run_browser_session(state, make_browser_handler, "Browser review UI", cleanup=cleanup, port=port)
 
 
 def build_empty_dirs_html():
@@ -2449,7 +2485,7 @@ async function cancel() {
   showDone('Cancelled');
 }
 
-init();
+if (!window.__DEDUP_POPUP_OPENED__) init();
 </script>
 </body>
 </html>""")
@@ -2495,9 +2531,9 @@ def make_empty_dir_handler(state):
     return EmptyDirHandler
 
 
-def select_empty_dirs_in_browser(dirs):
+def select_empty_dirs_in_browser(dirs, port=7979):
     state = EmptyDirSelectionState(dirs)
-    return _run_browser_session(state, make_empty_dir_handler, "Empty folder review UI")
+    return _run_browser_session(state, make_empty_dir_handler, "Empty folder review UI", port=port)
 
 
 def build_expected_hashes(groups):
@@ -3040,6 +3076,12 @@ def parse_args(argv):
             "folders) and open a browser UI to select which ones to trash."
         ),
     )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=7979,
+        help="Port for the local browser UI (default: 7979). A fixed port lets browsers remember popup permissions.",
+    )
     return parser.parse_args(argv)
 
 
@@ -3076,6 +3118,7 @@ def find_and_process_duplicates(argv=None):
     files_to_trash = select_files_in_browser(
         duplicate_groups,
         require_move_confirmation=not dry_run and not args.yes,
+        port=args.port,
     )
     print("-" * 60)
     if not files_to_trash:
@@ -3117,7 +3160,7 @@ def _run_empty_dir_phase(args, options):
         return 0
 
     print(f"\nFound {len(empty_dirs)} empty folder(s).")
-    dirs_to_trash = select_empty_dirs_in_browser(empty_dirs)
+    dirs_to_trash = select_empty_dirs_in_browser(empty_dirs, port=args.port)
     print("-" * 60)
     if not dirs_to_trash:
         print("\nNo folders were selected for removal.")
