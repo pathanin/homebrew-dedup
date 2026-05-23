@@ -65,12 +65,12 @@ dedup /path/to/folder --clean-empty-dirs
 
 ```text
 --fast-only              Use sampled chunks only. This is the default.
---full-verify           Fully hash matching candidates for exact verification.
---dry-run               Review selections without moving files.
---include-hidden        Include hidden files and directories.
---ignore-dir NAME       Ignore an additional directory name.
---ignore-file NAME      Ignore an additional file name or suffix.
---clean-empty-dirs      Review and trash empty directories after file cleanup.
+--full-verify            Fully hash matching candidates for exact verification.
+-d, --dry-run            Review selections without moving files.
+--include-hidden         Include hidden files and directories.
+--ignore-dir NAME        Ignore an additional directory name.
+--ignore-file NAME       Ignore an additional file name or suffix.
+-e, --clean-empty-dirs   Review and trash empty directories after file cleanup.
 ```
 
 Run `dedup --help` for the full option list.
