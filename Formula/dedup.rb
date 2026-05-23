@@ -12,7 +12,7 @@ class Dedup < Formula
 
     (bin/"dedup").write <<~EOS
       #!/bin/bash
-      exec "#{Formula["python@3.12"].opt_bin}/python3" -B "#{libexec}/dedup.py" "$@"
+      exec "#{Formula["python@3.12"].opt_bin}/python3.12" -B "#{libexec}/dedup.py" "$@"
     EOS
   end
 
