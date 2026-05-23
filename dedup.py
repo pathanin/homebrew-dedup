@@ -1172,7 +1172,9 @@ body:not(.pane-open) .pane-resizer { display: none; }
 /* ── Active group / file highlighting ────────────────── */
 .group.is-active { background: var(--surface); }
 .group.is-active > .group-head { background: var(--line); }
-.file.is-pane-active { border-color: var(--text) !important; }
+.file.is-pane-active { background: var(--surface); }
+.file.is-pane-active::after { content: ''; position: absolute; inset: 0; border: 2px solid var(--text); border-radius: 7px; pointer-events: none; z-index: 10; }
+body.list-view .file.is-pane-active::after { border-width: 0 0 0 3px; border-radius: 0; }
 /* ── List view ───────────────────────────────────────── */
 #listViewHeader { display: none; position: sticky; top: 0; z-index: 5; background: var(--surface); border-bottom: 2px solid var(--line); font-size: 11px; font-weight: 600; color: var(--muted); flex-shrink: 0; }
 body.list-view #listViewHeader { display: flex; }
@@ -1992,7 +1994,39 @@ function navigatePreview(dir) {
     return;
   }
   const next = files[idx + dir];
-  if (next) renderPreview(next.id);
+  if (next) { renderPreview(next.id); setActiveFile(next.id); }
+}
+function getVisibleFlatFiles() {
+  const result = [];
+  renderGroups.forEach(group => {
+    (group._visibleFiles || []).forEach(file => result.push({ file, groupId: group.id }));
+  });
+  return result;
+}
+function navigateMainView(dir) {
+  const flat = getVisibleFlatFiles();
+  if (!flat.length) return;
+  let idx = activeFileId ? flat.findIndex(entry => entry.file.id === activeFileId) : -1;
+  const nextIdx = idx < 0 ? (dir > 0 ? 0 : flat.length - 1) : Math.max(0, Math.min(flat.length - 1, idx + dir));
+  if (nextIdx === idx && idx >= 0) return;
+  const { file, groupId } = flat[nextIdx];
+  const groupChanged = groupId !== activeGroupId;
+  activeGroupId = groupId;
+  activeFileId = file.id;
+  refreshActiveGroupHighlight();
+  refreshActiveFileHighlight();
+  if (groupChanged) {
+    renderPane();
+  } else {
+    renderPaneMeta(file);
+  }
+  const card = findCard(file.id);
+  if (card) {
+    card.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  } else {
+    const groupEl = document.querySelector(`.group[data-group-id="${CSS.escape(groupId)}"]`);
+    if (groupEl) groupEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
 }
 function renderPreview(fileId) {
   if (!previewContext) return;
@@ -2415,9 +2449,13 @@ async function init() {
       if ($("previewOverlay").classList.contains("is-open")) closePreview();
       else if ($("confirmOverlay").classList.contains("is-open")) hideMoveConfirmation();
     }
-    if ($("previewOverlay").classList.contains("is-open") && !isTextInputTarget(event.target)) {
+    if (isTextInputTarget(event.target)) return;
+    if ($("previewOverlay").classList.contains("is-open")) {
       if (event.key === "ArrowLeft") { event.preventDefault(); navigatePreview(-1); }
       if (event.key === "ArrowRight") { event.preventDefault(); navigatePreview(1); }
+    } else if (!$("confirmOverlay").classList.contains("is-open")) {
+      if (event.key === "ArrowDown") { event.preventDefault(); navigateMainView(1); }
+      if (event.key === "ArrowUp") { event.preventDefault(); navigateMainView(-1); }
     }
   });
   render();
