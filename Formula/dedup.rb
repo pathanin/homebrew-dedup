@@ -17,4 +17,4 @@ class Dedup < Formula
   test do
     system bin/"dedup", "--help"
   end
-en
+end
