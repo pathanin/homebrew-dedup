@@ -27,6 +27,12 @@ Verify the command:
 dedup --help
 ```
 
+Or download `dedup.py` directly and run it with Python:
+
+```sh
+python3 dedup.py /path/to/folder
+```
+
 ## Optional Media Preview Support
 
 `dedup` works without `ffmpeg`, but image and video thumbnails are better when it is installed:
