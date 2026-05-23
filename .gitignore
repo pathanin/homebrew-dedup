@@ -1,5 +1,6 @@
 testfile/
 old-testfile/
 __pycache__/
+.omo/
 test_dedup.py
 test_popup_port.py

@@ -30,6 +30,11 @@ IMAGE_EXTENSIONS = frozenset({
 VIDEO_EXTENSIONS = frozenset({
     ".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm", ".wmv", ".flv",
 })
+AUDIO_EXTENSIONS = frozenset({
+    ".mp3", ".m4a", ".aac", ".ogg", ".flac", ".wav", ".opus", ".wma",
+    ".aiff", ".aif", ".alac", ".ape", ".wv", ".ra", ".mid", ".midi",
+    ".caf", ".amr", ".3ga",
+})
 PDF_EXTENSIONS = frozenset({".pdf"})
 TEXT_EXTENSIONS = frozenset({
     ".txt", ".md", ".markdown", ".csv", ".tsv", ".json", ".yaml", ".yml", ".xml",
@@ -58,9 +63,10 @@ MACOS_TRASH_CMD = shutil.which("trash")
 FAST_SAMPLE_BYTES = 65536
 MIN_FAST_SAMPLE_COUNT = 8
 MAX_FAST_SAMPLE_COUNT = 64
-SMALL_FILE_FULL_HASH_BYTES = FAST_SAMPLE_BYTES
+SMALL_FILE_FULL_HASH_BYTES = 1048576  # 1MB — small files get full hash
 FULL_HASH_CHUNK_BYTES = 1048576
 RANGE_SERVE_CHUNK_BYTES = 65536
+SUBPROCESS_SEMAPHORE = threading.Semaphore(4)
 DEFAULT_PAGINATION_LIMIT = 500
 MAX_PAGINATION_LIMIT = 2000
 DEFAULT_PROGRESS_EVERY = 5000
@@ -85,6 +91,7 @@ MACOS_BLOCKED_ROOTS = {"/System", "/Library", "/Applications", "/Users", "/Volum
 PHOTOS_LIBRARY_SUFFIXES = (".photoslibrary",)
 FFMPEG_PATH = shutil.which("ffmpeg")
 FFPROBE_PATH = shutil.which("ffprobe")
+EXIFTOOL_PATH = shutil.which("exiftool")
 COPY_PATTERN = re.compile(r"(\bcopy\b|\bduplicate\b|\s\(\d+\)$)", re.IGNORECASE)
 # NAS server-side recycle folders, checked at the volume root.
 # Synology DSM uses #recycle. QNAP uses @Recycle. Samba recycle often uses .recycle.
@@ -206,6 +213,10 @@ class VolumeHasNoTrashError(Exception):
         )
 
 
+class SymlinkReplacementError(OSError):
+    """Raised when a validated path is replaced with a symlink before removal."""
+
+
 def detect_os(platform=None, os_name=None):
     platform = platform if platform is not None else os.sys.platform
     os_name = os_name if os_name is not None else os.name
@@ -237,6 +248,8 @@ def get_media_kind(path):
         return "image"
     if extension in VIDEO_EXTENSIONS:
         return "video"
+    if extension in AUDIO_EXTENSIONS:
+        return "audio"
     return None
 
 
@@ -282,20 +295,21 @@ def get_video_duration(path):
     if not FFPROBE_PATH:
         return None
     try:
-        completed = subprocess.run(
-            [
-                FFPROBE_PATH,
-                "-v", "error",
-                "-show_entries", "format=duration",
-                "-of", "default=noprint_wrappers=1:nokey=1",
-                path,
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            check=False,
-            timeout=3,
-        )
+        with SUBPROCESS_SEMAPHORE:
+            completed = subprocess.run(
+                [
+                    FFPROBE_PATH,
+                    "-v", "error",
+                    "-show_entries", "format=duration",
+                    "-of", "default=noprint_wrappers=1:nokey=1",
+                    path,
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                check=False,
+                timeout=3,
+            )
     except (OSError, subprocess.TimeoutExpired):
         return None
     if completed.returncode != 0:
@@ -321,6 +335,76 @@ def get_video_thumbnail_timestamp(duration, index, count):
     safe_duration = max(duration - 1, 1)
     position = (index + 1) / (count + 1)
     return min(max(safe_duration * position, 1), max(duration - 0.5, 0))
+
+
+@lru_cache(maxsize=4096)
+def get_media_info(path):
+    if not FFPROBE_PATH:
+        return None
+    try:
+        with SUBPROCESS_SEMAPHORE:
+            result = subprocess.run(
+                [FFPROBE_PATH, "-v", "quiet", "-print_format", "json",
+                 "-show_streams", "-show_format", path],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                text=True, check=False, timeout=10,
+            )
+        if result.returncode != 0:
+            return None
+        data = json.loads(result.stdout)
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None
+    info = {}
+    for stream in data.get("streams", []):
+        codec_type = stream.get("codec_type", "")
+        if codec_type == "video" and "width" not in info:
+            if stream.get("width"):
+                info["width"] = stream["width"]
+                info["height"] = stream.get("height")
+            if stream.get("codec_name"):
+                info["codec"] = stream["codec_name"]
+        elif codec_type == "audio" and "audioCodec" not in info:
+            if stream.get("codec_name"):
+                info["audioCodec"] = stream["codec_name"]
+            if stream.get("sample_rate"):
+                info["sampleRate"] = stream["sample_rate"]
+            if stream.get("channels"):
+                info["channels"] = stream["channels"]
+    fmt = data.get("format", {})
+    if fmt.get("bit_rate"):
+        try:
+            info["bitrate"] = int(fmt["bit_rate"])
+        except (ValueError, TypeError):
+            pass
+    return info or None
+
+
+@lru_cache(maxsize=4096)
+def get_exif_info(path):
+    if not EXIFTOOL_PATH:
+        return None
+    try:
+        with SUBPROCESS_SEMAPHORE:
+            result = subprocess.run(
+                [EXIFTOOL_PATH, "-json", "-n", "-fast2", path],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                text=True, check=False, timeout=15,
+            )
+        if result.returncode != 0:
+            return None
+        data = json.loads(result.stdout)
+        if not data:
+            return None
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None
+    tags = data[0]
+    keep_keys = {
+        "Make", "Model", "LensModel", "FocalLength", "FNumber",
+        "ExposureTime", "ISO", "Flash", "GPSLatitude", "GPSLongitude",
+        "GPSAltitude", "DateTimeOriginal", "ColorSpace", "Orientation",
+        "MegaPixels",
+    }
+    return {k: v for k, v in tags.items() if k in keep_keys and v is not None} or None
 
 
 def build_thumbnail_command(path, kind, width=360, height=240, ffmpeg_path="ffmpeg", timestamp=1):
@@ -404,13 +488,14 @@ def render_thumbnail(path, width=360, height=240, thumb_index=0):
         timestamp = get_video_thumbnail_timestamp(duration, max(0, min(thumb_index, count - 1)), count)
 
     try:
-        completed = subprocess.run(
-            build_thumbnail_command(path, kind, width, height, FFMPEG_PATH, timestamp),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            check=False,
-            timeout=5,
-        )
+        with SUBPROCESS_SEMAPHORE:
+            completed = subprocess.run(
+                build_thumbnail_command(path, kind, width, height, FFMPEG_PATH, timestamp),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=5,
+            )
     except (OSError, subprocess.TimeoutExpired):
         return None
     if completed.returncode != 0:
@@ -639,6 +724,12 @@ def finish_progress():
 
 
 def scan_by_size(options, stats):
+    current_real = os.path.realpath(options.path)
+    if current_real != options.real_path:
+        raise ValueError(
+            f"Scan root changed since validation: {options.real_path} -> {current_real}. "
+            "Aborting for safety."
+        )
     sizes = defaultdict(list)
     singletons = {}
     entries_seen = 0
@@ -795,6 +886,12 @@ def find_empty_dirs(options):
     rules and/or subdirectories that are themselves empty by the same rule.
     The scan root itself is never included.
     """
+    current_real = os.path.realpath(options.path)
+    if current_real != options.real_path:
+        raise ValueError(
+            f"Scan root changed since validation: {options.real_path} -> {current_real}. "
+            "Aborting for safety."
+        )
     scan_root = os.path.abspath(options.path)
     empty_set = set()
     result = []
@@ -945,32 +1042,7 @@ button:hover:not(:disabled) { opacity: .8; }
 
 _SHARED_JS = """\
 function esc(value) { return String(value).replace(/[&<>"']/g, (ch) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])); }
-function urlId(value) { return encodeURIComponent(String(value)); }
-(function () {
-  var POP = 'dedup_popup';
-  function popupFeatures() {
-    var w = Math.round(screen.width * 0.60);
-    var h = Math.round(screen.height * 0.60);
-    var left = Math.round((screen.width - w) / 2);
-    var top = Math.round((screen.height - h) / 2);
-    return 'width=' + w + ',height=' + h + ',left=' + left + ',top=' + top + ',resizable=yes,scrollbars=yes';
-  }
-  function openPopup() {
-    return window.open(location.href, POP, popupFeatures());
-  }
-  function showPopupOpened() {
-    document.body.innerHTML = '<main style="display:flex;align-items:center;justify-content:center;height:100vh;text-align:center;padding:20px;"><div><h1>Opened in review window</h1><p>Continue in the smaller review window.</p><button id="dedupReopenPopup">Reopen Review Window</button></div></main>';
-    document.getElementById('dedupReopenPopup').addEventListener('click', openPopup);
-  }
-  if (window.name !== POP) {
-    var pw = openPopup();
-    if (pw) {
-      window.__DEDUP_POPUP_OPENED__ = true;
-      window.close();
-      setTimeout(showPopupOpened, 100);
-    }
-  }
-})();\
+function urlId(value) { return encodeURIComponent(String(value)); }\
 """
 
 
@@ -1071,21 +1143,92 @@ button[aria-pressed="true"], button.active-toggle { border-color: var(--text); }
 .dir-picker-impact { font-size: 10px; color: var(--muted); margin-bottom: 8px; }
 .dir-picker-btns { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
 .dir-picker button { padding: 3px 8px; font-size: 10px; font-weight: 600; }
+/* ── Main area: groups list + side pane ──────────────── */
+#mainArea { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+#mainArea > .content-scroll { flex: 1; min-width: 0; }
+#previewPane { width: 420px; min-width: 200px; border-left: 0; background: var(--panel); display: flex; flex-direction: column; overflow: hidden; flex-shrink: 0; }
+body:not(.pane-open) #previewPane { display: none; }
+body:not(.pane-open) .pane-resizer { display: none; }
+.pane-resizer { flex: 0 0 5px; background: var(--line); cursor: col-resize; position: relative; flex-shrink: 0; transition: background .15s; }
+.pane-resizer:hover, .pane-resizer.is-dragging { background: var(--muted); }
+.pane-resizer::before { content: ''; position: absolute; top: 0; bottom: 0; left: -6px; right: -6px; cursor: col-resize; }
+.pane-placeholder { display: flex; flex-direction: column; align-items: center; justify-content: center; flex: 1; color: var(--muted); text-align: center; font-size: 13px; gap: 10px; padding: 24px; }
+.pane-placeholder-icon { font-size: 28px; line-height: 1; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.pane-preview-area { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; background: var(--surface); position: relative; overflow: hidden; border-bottom: 1px solid var(--line); }
+.pane-preview-area img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
+.pane-preview-area video { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+.pane-preview-area iframe { width: 100%; height: 100%; border: 0; background: var(--panel); display: block; }
+.pane-audio-placeholder { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 28px 16px; width: 100%; }
+.pane-audio-icon { font-size: 52px; color: var(--muted); line-height: 1; }
+.pane-audio-player { width: calc(100% - 24px); }
+.pane-play-btn { position: absolute; width: 52px; height: 52px; border-radius: 50%; background: rgba(0,0,0,.6); color: #fff; border: 2px solid rgba(255,255,255,.45); font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background .15s; padding-left: 4px; }
+.pane-play-btn:hover { background: rgba(0,0,0,.82); opacity: 1; }
+.pane-metadata { flex: 0 0 auto; max-height: 40%; overflow-y: auto; padding: 10px 12px; font-size: 12px; border-top: 1px solid var(--line); }
+.pane-meta-who { font-size: 11px; color: var(--muted); font-style: italic; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--line); word-break: break-all; }
+.pane-meta-row { display: flex; gap: 6px; margin-bottom: 4px; min-width: 0; }
+.pane-meta-label { color: var(--muted); flex: 0 0 76px; font-size: 11px; padding-top: 1px; }
+.pane-meta-value { color: var(--text); word-break: break-all; flex: 1; min-width: 0; line-height: 1.4; }
+.pane-meta-section { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 10px 0 5px; }
+/* ── Active group / file highlighting ────────────────── */
+.group.is-active { background: var(--surface); }
+.group.is-active > .group-head { background: var(--line); }
+.file.is-pane-active { border-color: var(--text) !important; }
+/* ── List view ───────────────────────────────────────── */
+#listViewHeader { display: none; position: sticky; top: 0; z-index: 5; background: var(--surface); border-bottom: 2px solid var(--line); font-size: 11px; font-weight: 600; color: var(--muted); flex-shrink: 0; }
+body.list-view #listViewHeader { display: flex; }
+.lv-col { padding: 6px 8px; cursor: pointer; user-select: none; display: flex; align-items: center; gap: 3px; white-space: nowrap; border-right: 1px solid var(--line); }
+.lv-col:last-child { border-right: 0; cursor: default; }
+.lv-col:hover:not(:last-child) { color: var(--text); }
+.lv-col.sort-active { color: var(--text); }
+.lv-col-type { flex: 0 0 52px; }
+.lv-col-name { flex: 2; min-width: 100px; }
+.lv-col-dir { flex: 2; min-width: 80px; }
+.lv-col-size { flex: 0 0 76px; }
+.lv-col-count { flex: 0 0 52px; }
+.lv-col-actions { flex: 0 0 130px; }
+body.list-view .content { padding: 0; }
+body.list-view .group { border-radius: 0; border-left: 0; border-right: 0; border-top: 0; margin-bottom: 0; min-height: 0; }
+body.list-view .group + .group { border-top: 1px solid var(--line); }
+body.list-view .files { display: flex; flex-direction: column; gap: 0; padding: 0; grid-template-columns: none; }
+body.list-view .file { display: flex; flex-direction: row; border-radius: 0; border-left: 0; border-right: 0; border-bottom: 0; border-top: 1px solid var(--line); grid-template-rows: none; align-items: stretch; min-height: 40px; height: 40px; cursor: pointer; }
+body.list-view .file:first-child { border-top: 0; }
+body.list-view .thumb { display: none; }
+body.list-view .reveal-btn { display: none; }
+body.list-view .meta { flex-direction: row; padding: 0; gap: 0; flex: 1; align-items: center; overflow: hidden; min-height: 40px; }
+body.list-view .file-type-badge { flex: 0 0 52px; display: flex; align-items: center; justify-content: center; font-size: 10px; color: var(--muted); font-weight: 700; letter-spacing: .03em; border-right: 1px solid var(--line); height: 100%; }
+body.list-view .name { flex: 2; min-width: 100px; padding: 0 8px; -webkit-line-clamp: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+body.list-view .path { flex: 2; min-width: 80px; padding: 0 8px; -webkit-line-clamp: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; font-size: 11px; }
+body.list-view .badges { display: none; }
+body.list-view .file-size-lv { flex: 0 0 76px; font-size: 11px; color: var(--muted); padding: 0 8px; white-space: nowrap; display: flex; align-items: center; border-right: 1px solid var(--line); height: 100%; }
+body.list-view .choice { border-top: 0; border-left: 1px solid var(--line); flex: 0 0 130px; height: 40px; margin-top: 0; }
+.lv-preview-btn { display: none; }
+body.list-view .lv-preview-btn { display: flex; align-items: center; justify-content: center; font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: -.5px; border: 0; border-radius: 0; border-right: 1px solid var(--line); width: 36px; flex-shrink: 0; background: transparent; color: var(--muted); padding: 0; cursor: pointer; height: 100%; }
+body.list-view .lv-preview-btn:hover { color: var(--text); background: var(--surface); opacity: 1; }
+.file-type-badge { display: none; }
+.file-size-lv { display: none; }
+/* ── Compact modal ───────────────────────────────────── */
+.modal.wide { width: min(600px, 100%); max-height: 80vh; }
+.preview-body { min-height: 200px; }
+.preview-body img, .preview-body video { max-height: 50vh; }
+.preview-body pre { max-height: 40vh; }
 @media (max-width: 640px) {
   input[type="search"] { min-width: 100px; }
   .files { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
   .file { grid-template-rows: 110px 1fr; }
   .thumb { height: 110px; }
   .thumb img { max-height: 110px; }
+  #previewPane { display: none !important; }
 }
 </style>
 </head>
 <body>
 <header>
   <input id="search" type="search" placeholder="Filter by name, folder, or path">
-  <select id="mediaFilter"><option value="">All types</option><option value="image">Images</option><option value="video">Videos</option><option value="pdf">PDFs</option><option value="text">Text</option><option value="other">Other</option></select>
-  <select id="sortOrder"><option value="path">Sort: path</option><option value="size">Sort: size</option><option value="count">Sort: count</option><option value="directory">Sort: directory</option></select>
+  <select id="mediaFilter"><option value="">All types</option><option value="image">Images</option><option value="video">Videos</option><option value="audio">Audio</option><option value="pdf">PDFs</option><option value="text">Text</option><option value="other">Other</option></select>
+  <select id="sortOrder"><option value="path">Sort: path</option><option value="size">Sort: size</option><option value="count">Sort: count</option><option value="directory">Sort: directory</option><option value="type">Sort: type</option></select>
   <button id="collapseClean" aria-pressed="false">Trashed only</button>
+  <button id="toggleListView" aria-pressed="true">List view</button>
+  <button id="togglePane" aria-pressed="true">Preview</button>
   <button id="undo" disabled>Undo</button>
   <button id="cancel">Cancel</button>
   <button id="finish" class="primary">Use selection</button>
@@ -1095,7 +1238,30 @@ button[aria-pressed="true"], button.active-toggle { border-color: var(--text); }
   <span class="stats-inline"><b id="groupCount">0</b> groups · <b id="fileCount">0</b> files · <b id="trashCount">0</b> marked · <b id="reclaimSize">0 B</b> reclaimable</span>
   <span id="subtitle" class="filter-hint"></span>
 </div>
-<div class="content-scroll" id="scrollRoot"><section class="content" id="groups"></section></div>
+<div id="mainArea">
+<div class="content-scroll" id="scrollRoot">
+  <div id="listViewHeader">
+    <div class="lv-col lv-col-type" data-lv-sort="type">Type</div>
+    <div class="lv-col lv-col-name" data-lv-sort="path">Name</div>
+    <div class="lv-col lv-col-dir" data-lv-sort="directory">Directory</div>
+    <div class="lv-col lv-col-size" data-lv-sort="size">Size</div>
+    <div class="lv-col lv-col-count" data-lv-sort="count">#</div>
+    <div class="lv-col lv-col-actions">Actions</div>
+  </div>
+  <section class="content" id="groups"></section>
+</div>
+<div class="pane-resizer" id="paneResizer"></div>
+<div id="previewPane">
+  <div class="pane-placeholder" id="panePlaceholder">
+    <div class="pane-placeholder-icon">(^o^)</div>
+    <p>Click a group to preview</p>
+  </div>
+  <div id="paneContent" style="display:none;flex-direction:column;flex:1;min-height:0;overflow:hidden;">
+    <div class="pane-preview-area" id="panePreviewArea"></div>
+    <div class="pane-metadata" id="paneMetadata"></div>
+  </div>
+</div>
+</div>
 <div id="confirmOverlay" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
   <div class="modal">
     <h2 id="confirmTitle">Move selected files?</h2>
@@ -1145,6 +1311,15 @@ let trashedOnly = false;
 let isSubmitting = false;
 let previewContext = null;
 let previewRenderToken = 0;
+let activeGroupId = null;
+let activeFileId = null;
+let paneOpen = true;
+let listViewMode = true;
+let paneMetaToken = 0;
+let paneImageToken = 0;
+let paneVideoToken = 0;
+let paneVideoTimer = null;
+let sortDescending = false;
 const $ = (id) => document.getElementById(id);
 let searchTimeout = null;
 const thumbTimers = new WeakMap();
@@ -1246,7 +1421,8 @@ function updateFileCard(fileId) {
   const card = findCard(fileId);
   if (!file || !card) return;
   const isTrash = trash.has(file.id);
-  card.className = `file ${isTrash ? 'is-trash' : 'is-keep'}`;
+  const paneActive = card.classList.contains("is-pane-active");
+  card.className = `file ${isTrash ? 'is-trash' : 'is-keep'}${paneActive ? ' is-pane-active' : ''}`;
   const keepButton = card.querySelector(".keep");
   const trashButton = card.querySelector(".trash");
   const badges = card.querySelector(".badges");
@@ -1489,6 +1665,287 @@ function fallbackVideoThumb(img) {
   fallback.textContent = img.dataset.fileName || "Video preview unavailable";
   img.replaceWith(fallback);
 }
+/* ── Pane state ─────────────────────────────────────── */
+function applyPaneOpen() {
+  document.body.classList.toggle("pane-open", paneOpen);
+  const btn = $("togglePane");
+  if (btn) { btn.setAttribute("aria-pressed", String(paneOpen)); btn.classList.toggle("active-toggle", paneOpen); }
+}
+function togglePane() {
+  paneOpen = !paneOpen;
+  try { localStorage.setItem("dedupPaneOpen", String(paneOpen)); } catch {}
+  applyPaneOpen();
+}
+function applyListView() {
+  document.body.classList.toggle("list-view", listViewMode);
+  const btn = $("toggleListView");
+  if (btn) { btn.setAttribute("aria-pressed", String(listViewMode)); btn.classList.toggle("active-toggle", listViewMode); }
+  if (listViewMode && !paneOpen) { paneOpen = true; try { localStorage.setItem("dedupPaneOpen", "true"); } catch {} applyPaneOpen(); }
+  updateListViewHeader();
+}
+function initPaneResizer() {
+  const resizer = $("paneResizer");
+  const pane = $("previewPane");
+  const mainArea = $("mainArea");
+  if (!resizer || !pane || !mainArea) return;
+  try {
+    const saved = localStorage.getItem("dedupPaneWidth");
+    if (saved) pane.style.width = Math.max(200, Math.min(Number(saved), window.innerWidth * 0.8)) + "px";
+  } catch {}
+  resizer.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    resizer.classList.add("is-dragging");
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    let rafPending = false;
+    const onMove = (e) => {
+      const rect = mainArea.getBoundingClientRect();
+      const w = Math.max(200, Math.min(rect.right - e.clientX, rect.width * 0.75));
+      pane.style.width = w + "px";
+      if (!rafPending) {
+        rafPending = true;
+        requestAnimationFrame(() => { rafPending = false; applyPaneImageQuality(); });
+      }
+    };
+    const onUp = () => {
+      resizer.classList.remove("is-dragging");
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      try { localStorage.setItem("dedupPaneWidth", parseInt(pane.style.width, 10)); } catch {}
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+}
+function toggleListView() {
+  listViewMode = !listViewMode;
+  try { localStorage.setItem("dedupListView", String(listViewMode)); } catch {}
+  applyListView();
+  render();
+}
+function updateListViewHeader() {
+  const header = $("listViewHeader");
+  if (!header) return;
+  const current = $("sortOrder").value;
+  header.querySelectorAll("[data-lv-sort]").forEach(col => {
+    const active = col.dataset.lvSort === current;
+    col.classList.toggle("sort-active", active);
+    col.textContent = col.textContent.replace(/ [↑↓]$/, "");
+    if (active) col.textContent += sortDescending ? " ↓" : " ↑";
+  });
+}
+/* ── Pane content ───────────────────────────────────── */
+function refreshActiveFileHighlight() {
+  document.querySelectorAll(".file.is-pane-active").forEach(el => el.classList.remove("is-pane-active"));
+  if (!activeFileId) return;
+  const el = document.querySelector(`.file[data-file-id="${CSS.escape(activeFileId)}"]`);
+  if (el) el.classList.add("is-pane-active");
+}
+function refreshActiveGroupHighlight() {
+  document.querySelectorAll(".group.is-active").forEach(el => el.classList.remove("is-active"));
+  if (!activeGroupId) return;
+  const el = document.querySelector(`.group[data-group-id="${CSS.escape(activeGroupId)}"]`);
+  if (el) el.classList.add("is-active");
+}
+function setActiveGroup(groupId) {
+  if (activeGroupId === groupId) return;
+  activeGroupId = groupId;
+  const group = groupById.get(groupId);
+  const repr = group ? (group.files.find(f => f.isOriginalGuess) || group.files[0]) : null;
+  activeFileId = repr ? repr.id : null;
+  refreshActiveGroupHighlight();
+  refreshActiveFileHighlight();
+  renderPane();
+}
+function setActiveFile(fileId) {
+  activeFileId = fileId;
+  refreshActiveFileHighlight();
+  const file = fileById.get(fileId);
+  if (file) renderPaneMeta(file);
+}
+function startPaneVideo(file) {
+  stopPaneVideoCycle();
+  const area = $("panePreviewArea");
+  if (!area) return;
+  area.innerHTML = "";
+  const video = document.createElement("video");
+  video.controls = true;
+  video.autoplay = true;
+  video.style.cssText = "max-width:100%;max-height:100%;object-fit:contain;display:block";
+  video.src = `/media/${urlId(file.id)}`;
+  area.appendChild(video);
+}
+function stopPaneVideoCycle() {
+  paneVideoToken++;
+  if (paneVideoTimer) {
+    clearInterval(paneVideoTimer);
+    paneVideoTimer = null;
+  }
+}
+async function startPaneVideoCycle(file) {
+  stopPaneVideoCycle();
+  const token = ++paneVideoToken;
+  await hydrateVideoFile(file);
+  if (token !== paneVideoToken) return;
+  const count = Math.max(1, Number(file.thumbnailCount || 1));
+  if (count <= 1) return;
+  let index = 0;
+  const tick = () => {
+    if (token !== paneVideoToken) return;
+    const area = $("panePreviewArea");
+    const img = area ? area.querySelector("img[data-pane-video-thumb='1']") : null;
+    if (!img || !img.isConnected || img.dataset.fileId !== file.id) {
+      stopPaneVideoCycle();
+      return;
+    }
+    index = (index + 1) % count;
+    img.dataset.thumbIndex = String(index);
+    img.src = `/thumb/${urlId(file.id)}?i=${index}`;
+  };
+  paneVideoTimer = setInterval(tick, 650);
+}
+async function hydratePaneText(fileId, node) {
+  try {
+    const response = await fetch(`/text/${urlId(fileId)}`);
+    if (!response.ok) throw new Error("unavailable");
+    const payload = await response.json();
+    if (node.isConnected && node.dataset.paneText === fileId)
+      node.textContent = typeof payload.text === "string" ? payload.text : "Preview unavailable";
+  } catch { if (node.isConnected) node.textContent = "Preview unavailable"; }
+}
+const reprDimsCache = new Map();
+async function loadReprDims(file) {
+  if (reprDimsCache.has(file.id)) return reprDimsCache.get(file.id);
+  try {
+    const resp = await fetch(`/meta/${urlId(file.id)}`);
+    if (!resp.ok) return null;
+    const payload = await resp.json();
+    if (!payload.width) return null;
+    const dims = { width: payload.width };
+    reprDimsCache.set(file.id, dims);
+    return dims;
+  } catch { return null; }
+}
+function applyPaneImageQuality() {
+  if (!activeGroupId) return;
+  const g = groupById.get(activeGroupId);
+  const repr = g ? (g.files.find(f => f.isOriginalGuess) || g.files[0]) : null;
+  if (!repr || repr.mediaKind !== "image") return;
+  const dims = reprDimsCache.get(repr.id);
+  if (!dims) return;
+  const pane = $("previewPane");
+  const w = pane ? pane.clientWidth : 0;
+  if (!w) return;
+  const area = $("panePreviewArea");
+  if (!area) return;
+  const img = area.querySelector("img");
+  if (!img || !img.isConnected) return;
+  const useOriginal = w / dims.width >= 0.5;
+  const isOriginal = !img.src.includes("/thumb/");
+  if (useOriginal && !isOriginal) img.src = `/media/${urlId(repr.id)}`;
+  else if (!useOriginal && isOriginal) img.src = `/thumb/${urlId(repr.id)}`;
+}
+async function maybeSwitchToOriginal(file) {
+  const token = ++paneImageToken;
+  const dims = await loadReprDims(file);
+  if (!dims || token !== paneImageToken) return;
+  applyPaneImageQuality();
+}
+function renderPanePreview(file) {
+  const area = $("panePreviewArea");
+  if (!area) return;
+  stopPaneVideoCycle();
+  const oldVideo = area.querySelector("video");
+  if (oldVideo) { oldVideo.pause(); oldVideo.src = ""; }
+  const oldIframe = area.querySelector("iframe");
+  if (oldIframe) oldIframe.src = "";
+  if (file.mediaKind === "image") {
+    area.innerHTML = `<img src="/thumb/${urlId(file.id)}" onerror="this.onerror=null;this.src='/media/${urlId(file.id)}'" alt="">`;
+    maybeSwitchToOriginal(file);
+  } else if (file.mediaKind === "video") {
+    area.innerHTML = `<img src="/thumb/${urlId(file.id)}?i=0" data-pane-video-thumb="1" data-file-id="${esc(file.id)}" data-thumb-index="0" alt=""><button class="pane-play-btn" title="Play video">&#9654;</button>`;
+    area.querySelector(".pane-play-btn").addEventListener("click", () => startPaneVideo(file));
+    startPaneVideoCycle(file);
+  } else if (file.mediaKind === "audio") {
+    area.innerHTML = `<div class="pane-audio-placeholder"><div class="pane-audio-icon">&#9835;</div><audio class="pane-audio-player" controls src="/media/${urlId(file.id)}"></audio></div>`;
+  } else if (file.previewKind === "pdf") {
+    area.innerHTML = `<iframe src="/pdf/${urlId(file.id)}#page=1&toolbar=0&navpanes=0" title="PDF preview"></iframe>`;
+  } else if (file.previewKind === "text") {
+    area.innerHTML = `<pre style="width:100%;height:100%;padding:10px;overflow:auto;font:11px/1.4 ui-monospace,monospace;margin:0;background:var(--surface);color:var(--text)" data-pane-text="${esc(file.id)}">Loading...</pre>`;
+    hydratePaneText(file.id, area.querySelector("[data-pane-text]"));
+  } else {
+    area.innerHTML = `<div style="padding:24px;color:var(--muted);text-align:center;font-size:12px;word-break:break-all">${esc(file.name)}</div>`;
+  }
+}
+function metaRow(label, value) {
+  return `<div class="pane-meta-row"><span class="pane-meta-label">${esc(String(label))}</span><span class="pane-meta-value">${esc(String(value ?? ""))}</span></div>`;
+}
+function formatDuration(seconds) {
+  if (!seconds || isNaN(Number(seconds))) return "";
+  const s = Math.round(Number(seconds));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  if (h > 0) return `${h}:${String(m).padStart(2,"0")}:${String(sec).padStart(2,"0")}`;
+  return `${m}:${String(sec).padStart(2,"0")}`;
+}
+function formatBitrate(bps) {
+  if (!bps) return "";
+  const kbps = Math.round(Number(bps) / 1000);
+  return kbps >= 1000 ? `${(kbps / 1000).toFixed(1)} Mbps` : `${kbps} kbps`;
+}
+async function renderPaneMeta(file) {
+  const area = $("paneMetadata");
+  if (!area || !file) return;
+  const token = ++paneMetaToken;
+  const date = new Date(Number(file.mtime) / 1e6);
+  const dateStr = isNaN(date.getTime()) ? "" : date.toLocaleString();
+  let html = `<div class="pane-meta-who">Metadata: ${esc(file.name)}</div>`;
+  html += metaRow("Name", file.name);
+  html += metaRow("Path", file.path);
+  html += metaRow("Size", file.sizeLabel);
+  if (dateStr) html += metaRow("Modified", dateStr);
+  html += `<div id="paneMetaExtra"></div>`;
+  area.innerHTML = html;
+  try {
+    const response = await fetch(`/meta/${urlId(file.id)}`);
+    if (!response.ok || token !== paneMetaToken) return;
+    const payload = await response.json();
+    const extra = $("paneMetaExtra");
+    if (!extra || token !== paneMetaToken) return;
+    let x = "";
+    if (payload.duration != null) x += metaRow("Duration", formatDuration(payload.duration));
+    if (payload.width && payload.height) x += metaRow("Dimensions", `${payload.width} × ${payload.height}`);
+    if (payload.codec) x += metaRow("Codec", payload.codec);
+    if (payload.audioCodec) x += metaRow("Audio", payload.audioCodec);
+    if (payload.sampleRate) x += metaRow("Sample rate", `${payload.sampleRate} Hz`);
+    if (payload.channels) x += metaRow("Channels", payload.channels);
+    if (payload.bitrate) x += metaRow("Bitrate", formatBitrate(payload.bitrate));
+    if (payload.exif && Object.keys(payload.exif).length) {
+      x += `<div class="pane-meta-section">EXIF</div>`;
+      for (const [k, v] of Object.entries(payload.exif)) x += metaRow(k, v);
+    }
+    extra.innerHTML = x;
+  } catch {}
+}
+function renderPane() {
+  if (!paneOpen) return;
+  const group = activeGroupId ? groupById.get(activeGroupId) : null;
+  const placeholder = $("panePlaceholder");
+  const content = $("paneContent");
+  if (!placeholder || !content) return;
+  if (!group) {
+    placeholder.style.display = "";
+    content.style.display = "none";
+    return;
+  }
+  placeholder.style.display = "none";
+  content.style.display = "flex";
+  const repr = group.files.find(f => f.isOriginalGuess) || group.files[0];
+  if (repr) renderPanePreview(repr);
+  const metaFile = activeFileId ? fileById.get(activeFileId) : repr;
+  if (metaFile) renderPaneMeta(metaFile);
+}
 function mediaHtml(file) {
   if (file.mediaKind === "image") return `<img loading="lazy" src="/thumb/${urlId(file.id)}" onerror="this.onerror=null;this.src='/media/${urlId(file.id)}'" alt="">`;
   if (file.mediaKind === "video") {
@@ -1501,8 +1958,8 @@ function mediaHtml(file) {
 }
 function previewHtml(file) {
   if (file.mediaKind === "image") return `<img src="/media/${urlId(file.id)}" alt="">`;
-  if (file.mediaKind === "video") return `<video controls autoplay muted loop src="/media/${urlId(file.id)}"></video>`;
-  if (file.previewKind === "pdf") return `<iframe src="/pdf/${urlId(file.id)}#page=1"></iframe>`;
+  if (file.mediaKind === "video") return `<video controls autoplay muted src="/media/${urlId(file.id)}"></video>`;
+  if (file.previewKind === "pdf") return `<div style="padding:32px;text-align:center;color:var(--muted);font-size:13px;display:flex;flex-direction:column;align-items:center;gap:12px"><p style="margin:0">PDF preview available in the side panel.</p><a href="/pdf/${urlId(file.id)}" target="_blank" style="color:var(--text);font-weight:600">↗ Open PDF in new tab</a></div>`;
   if (file.previewKind === "text") return `<pre data-preview-text="${esc(file.id)}">Loading...</pre>`;
   return `<p>${esc(file.name)}</p>`;
 }
@@ -1569,8 +2026,13 @@ async function hydratePreviewText(fileId, token, textNode) {
 }
 function openPreview(fileId, groupId, event) {
   if (event) event.stopPropagation();
+  const overlay = $("previewOverlay");
+  if (overlay.classList.contains("is-open") && previewContext && previewContext.fileId === fileId) {
+    closePreview();
+    return;
+  }
   previewContext = { fileId, groupId };
-  $("previewOverlay").classList.add("is-open");
+  overlay.classList.add("is-open");
   renderPreview(fileId);
   $("previewClose").focus();
 }
@@ -1627,10 +2089,11 @@ function renderGroupContent(el, group) {
   const fileCountLabel = files.length === group.files.length ? `${group.files.length} files` : `${files.length} of ${group.files.length} files`;
   const cards = files.map((file) => {
     const isTrash = trash.has(file.id);
+    const typeLabel = {"image":"IMG","video":"VID","audio":"AUD","pdf":"PDF","text":"TXT"}[file.previewKind] || "—";
     return `<article class="file ${isTrash ? 'is-trash' : 'is-keep'}" data-file-id="${esc(file.id)}">
       <button class="reveal-btn" data-action="reveal" title="Reveal ${esc(file.name)} in Finder/Explorer" aria-label="Reveal ${esc(file.name)} in Finder/Explorer">Open</button>
       <div class="thumb" role="button" tabindex="0" data-action="preview" data-group-id="${esc(group.id)}">${mediaHtml(file)}</div>
-      <div class="meta"><div class="name" title="${esc(file.name)}">${esc(file.name)}</div><div class="path" title="${esc(file.path)}">${esc(file.directory)}</div><div class="badges">${fileBadgesHtml(file, isTrash)}</div><div class="choice"><button class="${!isTrash ? 'active keep' : 'keep'}" data-mark="keep">Keep</button><button class="${isTrash ? 'active trash' : 'trash'}" data-mark="trash">Trash</button></div></div>
+      <div class="meta"><div class="file-type-badge">${esc(typeLabel)}</div><div class="name" title="${esc(file.name)}">${esc(file.name)}</div><div class="path" title="${esc(file.path)}">${esc(file.directory)}</div><div class="badges">${fileBadgesHtml(file, isTrash)}</div><div class="file-size-lv">${esc(file.sizeLabel)}</div><div class="choice"><button class="lv-preview-btn" data-action="preview" data-group-id="${esc(group.id)}" title="Preview">(o)</button><button class="${!isTrash ? 'active keep' : 'keep'}" data-mark="keep">Keep</button><button class="${isTrash ? 'active trash' : 'trash'}" data-mark="trash">Trash</button></div></div>
     </article>`;
   }).join("");
   el.innerHTML = `<div class="group-head"><div class="group-title"><b>${fileCountLabel}</b><span>${esc(group.hashName)} ${esc(group.hash.substring(0,8))}</span></div><div class="group-actions" data-group-id="${esc(group.id)}"><button class="trash-copies" data-group-action="trash">Trash copies</button><button data-group-action="folder">By folder</button><button class="group-link" data-group-action="oldest">Keep oldest</button><button class="group-link" data-group-action="none">Keep all</button></div></div><div class="files">${cards}</div>`;
@@ -1646,6 +2109,8 @@ function renderGroupContent(el, group) {
   };
   hydrateVideoMetadata(el);
   hydrateTextPreviews(el);
+  refreshActiveGroupHighlight();
+  refreshActiveFileHighlight();
 }
 function handleGroupsClick(event) {
   const target = event.target;
@@ -1683,6 +2148,33 @@ function handleGroupsClick(event) {
     const action = groupButton.dataset.groupAction;
     if (action === "folder") showDirPicker(group, event);
     else markGroup(group, action);
+    return;
+  }
+  // File card click → set active file (and group) for pane
+  const fileCard = target.closest(".file[data-file-id]");
+  if (fileCard && root.contains(fileCard)) {
+    const groupEl = fileCard.closest(".group[data-group-id]");
+    if (groupEl) {
+      const gid = groupEl.dataset.groupId;
+      if (gid !== activeGroupId) {
+        activeGroupId = gid;
+        refreshActiveGroupHighlight();
+        const group = groupById.get(gid);
+        const repr = group ? (group.files.find(f => f.isOriginalGuess) || group.files[0]) : null;
+        if (repr) renderPanePreview(repr);
+        const placeholder = $("panePlaceholder");
+        const content = $("paneContent");
+        if (placeholder) placeholder.style.display = "none";
+        if (content) content.style.display = "flex";
+      }
+      setActiveFile(fileCard.dataset.fileId);
+    }
+    return;
+  }
+  // Group card click (not on any specific element) → set active group
+  const groupEl = target.closest(".group[data-group-id]");
+  if (groupEl && root.contains(groupEl)) {
+    setActiveGroup(groupEl.dataset.groupId);
   }
 }
 function handleGroupsKeydown(event) {
@@ -1757,16 +2249,20 @@ function render() {
   const filters = getFilters();
   const sort = $("sortOrder").value;
   computeRenderState(filters);
-  if (sort === "size") renderGroups.sort((a, b) => b.files[0].size - a.files[0].size);
-  else if (sort === "count") renderGroups.sort((a, b) => b.files.length - a.files.length);
-  else if (sort === "directory") renderGroups.sort((a, b) => directorySortKey(a, filters).localeCompare(directorySortKey(b, filters)));
-  else renderGroups.sort((a, b) => a.files[0].path.localeCompare(b.files[0].path));
+  const repr = g => g.files.find(f => f.isOriginalGuess) || g.files[0];
+  const dir = sortDescending ? -1 : 1;
+  if (sort === "size") renderGroups.sort((a, b) => dir * (repr(a).size - repr(b).size));
+  else if (sort === "count") renderGroups.sort((a, b) => dir * (a.files.length - b.files.length));
+  else if (sort === "directory") renderGroups.sort((a, b) => dir * directorySortKey(a, filters).localeCompare(directorySortKey(b, filters)));
+  else if (sort === "type") renderGroups.sort((a, b) => dir * ((repr(a).previewKind || "other").localeCompare(repr(b).previewKind || "other") || repr(a).path.localeCompare(repr(b).path)));
+  else renderGroups.sort((a, b) => dir * repr(a).path.localeCompare(repr(b).path));
   const root = $("groups");
   root.innerHTML = "";
   renderGroups.forEach((group, idx) => {
     const gEl = document.createElement("section");
     gEl.className = "group";
     gEl.dataset.index = idx;
+    gEl.dataset.groupId = group.id;
     root.appendChild(gEl);
     observer.observe(gEl);
   });
@@ -1775,6 +2271,8 @@ function render() {
     root.innerHTML = `<div class="empty-state"><p>${message}</p>${filtersAreActive(filters) ? '<button onclick="clearFilters()">Clear filters</button>' : ""}</div>`;
   }
   updateStats(filters);
+  refreshActiveGroupHighlight();
+  refreshActiveFileHighlight();
 }
 async function submitSelection(cancelled) {
   if (isSubmitting) return;
@@ -1874,9 +2372,29 @@ async function init() {
   allFilesList.forEach(f => { if (f.defaultTrash) trash.add(f.id); });
   setTrashedOnly(false);
   if (subtitleEl) subtitleEl.textContent = "";
+  try { paneOpen = localStorage.getItem("dedupPaneOpen") !== "false"; } catch {}
+  try { const lv = localStorage.getItem("dedupListView"); if (lv !== null) listViewMode = lv === "true"; } catch {}
+  applyPaneOpen();
+  applyListView();
+  initPaneResizer();
+  $("togglePane").addEventListener("click", togglePane);
+  $("toggleListView").addEventListener("click", toggleListView);
+  $("listViewHeader").addEventListener("click", (e) => {
+    const col = e.target.closest("[data-lv-sort]");
+    if (!col) return;
+    const newSort = col.dataset.lvSort;
+    if ($("sortOrder").value === newSort) {
+      sortDescending = !sortDescending;
+    } else {
+      $("sortOrder").value = newSort;
+      sortDescending = false;
+    }
+    render();
+    updateListViewHeader();
+  });
   $("search").addEventListener("input", () => { clearTimeout(searchTimeout); searchTimeout = setTimeout(render, 150); });
   $("mediaFilter").addEventListener("change", render);
-  $("sortOrder").addEventListener("change", render);
+  $("sortOrder").addEventListener("change", () => { sortDescending = false; render(); updateListViewHeader(); });
   $("collapseClean").addEventListener("click", () => { setTrashedOnly(!trashedOnly); render(); });
   $("undo").addEventListener("click", undoLastAction);
   $("finish").addEventListener("click", showMoveConfirmation);
@@ -1904,7 +2422,7 @@ async function init() {
   });
   render();
 }
-if (!window.__DEDUP_POPUP_OPENED__) init();
+init();
 </script>
 </body>
 </html>""")
@@ -1964,7 +2482,15 @@ class _BaseHandler(BaseHTTPRequestHandler):
         self.send_bytes(status, body, "application/json")
 
     def read_json_body(self):
-        length = int(self.headers.get("Content-Length", "0") or "0")
+        raw = self.headers.get("Content-Length", "0") or "0"
+        try:
+            length = int(raw)
+        except (ValueError, TypeError):
+            self.send_json({"ok": False}, 400)
+            return None, False
+        if length < 0:
+            self.send_json({"ok": False}, 400)
+            return None, False
         try:
             return json.loads(self.rfile.read(length).decode("utf-8")), True
         except (json.JSONDecodeError, UnicodeDecodeError):
@@ -2107,7 +2633,7 @@ def make_browser_handler(state):
 
         def serve_media(self, file_id):
             path = state._path_by_id.get(file_id)
-            if not path or get_media_kind(path) not in ("image", "video"):
+            if not path or get_media_kind(path) not in ("image", "video", "audio"):
                 self.send_error(404)
                 return
             content_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
@@ -2148,6 +2674,25 @@ def make_browser_handler(state):
             if media_kind == "video":
                 duration = get_video_duration(path)
                 payload["thumbnailCount"] = get_video_thumbnail_count(duration)
+                if duration:
+                    payload["duration"] = duration
+                info = get_media_info(path)
+                if info:
+                    payload.update(info)
+            elif media_kind == "audio":
+                duration = get_video_duration(path)
+                if duration:
+                    payload["duration"] = duration
+                info = get_media_info(path)
+                if info:
+                    payload.update(info)
+            elif media_kind == "image":
+                info = get_media_info(path)
+                if info:
+                    payload.update(info)
+                exif = get_exif_info(path)
+                if exif:
+                    payload["exif"] = exif
             self.send_json(payload)
 
         def serve_text(self, file_id):
@@ -2485,7 +3030,7 @@ async function cancel() {
   showDone('Cancelled');
 }
 
-if (!window.__DEDUP_POPUP_OPENED__) init();
+init();
 </script>
 </body>
 </html>""")
@@ -2574,6 +3119,7 @@ def is_macos_external_volume_path(path):
 
 
 def move_to_trash_with_cmd(path):
+    _ensure_no_symlink_replacement(path)
     if not MACOS_TRASH_CMD:
         raise OSError("trash command not found")
     completed = subprocess.run(
@@ -2626,6 +3172,22 @@ def make_unique_collision_path(path):
         suffix += 1
 
 
+def _ensure_no_symlink_replacement(path):
+    """Raise OSError if *path* exists and is a symlink (TOCTOU guard).
+    Missing paths are silently allowed — the caller's own operation
+    will fail naturally if the file is gone.
+    """
+    try:
+        st = os.stat(path, follow_symlinks=False)
+    except OSError:
+        return  # path may have been cleaned up — let the caller handle it
+    if stat.S_ISLNK(st.st_mode):
+        raise SymlinkReplacementError(
+            f"Safety abort: {path!r} was replaced with a symlink to "
+            f"{os.readlink(path)!r}"
+        )
+
+
 def move_to_nas_recycle(path, recycle_root, volume_root):
     """Move ``path`` into a NAS server-side recycle folder via os.rename.
 
@@ -2634,6 +3196,7 @@ def move_to_nas_recycle(path, recycle_root, volume_root):
     folder so files of the same name from different directories don't
     collide and so the NAS UI can show recovery context.
     """
+    _ensure_no_symlink_replacement(path)
     rel = os.path.relpath(path, volume_root)
     dest = os.path.join(recycle_root, rel)
     parent = os.path.dirname(dest)
@@ -2688,6 +3251,7 @@ def prompt_permanent_delete(
 
 
 def move_to_local_trash(path):
+    _ensure_no_symlink_replacement(path)
     trash_dir = os.path.expanduser("~/.Trash")
     if not os.path.isdir(trash_dir):
         raise OSError("~/.Trash not found")
@@ -2710,6 +3274,7 @@ def move_to_trash_safely(path, send_to_trash):
     :class:`VolumeHasNoTrashError` so the caller can decide between
     permanent deletion, ``~/.Trash`` copy, or skipping.
     """
+    _ensure_no_symlink_replacement(path)
     try:
         send_to_trash(path)
         return "send2trash"
@@ -2719,6 +3284,8 @@ def move_to_trash_safely(path, send_to_trash):
         try:
             move_to_trash_with_cmd(path)
             return "trash-cmd"
+        except SymlinkReplacementError:
+            raise
         except Exception as cmd_error:
             volume_root = get_macos_volume_root(path)
             if volume_root:
@@ -2727,6 +3294,8 @@ def move_to_trash_safely(path, send_to_trash):
                     try:
                         move_to_nas_recycle(path, recycle_root, volume_root)
                         return "nas-recycle"
+                    except SymlinkReplacementError:
+                        raise
                     except Exception:
                         # If the same-volume rename fails (e.g. cross-device,
                         # permission), fall through to the no-trash signal.
@@ -2816,9 +3385,11 @@ def trash_files(
                 no_trash_strategy[no_trash.volume_root] = strategy
             try:
                 if strategy == "permanent":
+                    _ensure_no_symlink_replacement(path)
                     os.remove(path)
                     trash_method = "permanent-delete"
                 elif strategy == "local":
+                    _ensure_no_symlink_replacement(path)
                     move_to_local_trash(path)
                     trash_method = "local-trash"
                 else:
@@ -2944,9 +3515,18 @@ def trash_empty_dirs(
                 no_trash_strategy[no_trash.volume_root] = strategy
             try:
                 if strategy == "permanent":
+                    if not is_effectively_empty_dir(path, options):
+                        print(
+                            f"Skipped (directory no longer empty before delete): {path}",
+                            file=sys.stderr,
+                        )
+                        result.skipped += 1
+                        continue
+                    _ensure_no_symlink_replacement(path)
                     shutil.rmtree(path)
                     trash_method = "permanent-delete"
                 elif strategy == "local":
+                    _ensure_no_symlink_replacement(path)
                     move_to_local_trash(path)
                     trash_method = "local-trash"
                 else:

@@ -1,16 +1,19 @@
 # dedup
 
-`dedup` is a local duplicate-file review tool. It scans a folder, groups likely duplicate files, opens a browser-based review UI on your machine, and moves the selected duplicates to Trash.
+`dedup` is a local duplicate-file review tool. It scans a folder, groups likely duplicates, opens a browser UI on your machine, and moves only the files you select to Trash or a recoverable recycle location.
 
-The tool is designed for cautious cleanup:
+It is built for large, messy folders where you want fast duplicate detection, visual review, and conservative delete-time safety.
 
-- Uses fast sampled hashing by default for quick scans of large folders
-- Offers `--full-verify` for exact content verification
-- Opens a local browser UI for visual review before trashing files
-- Supports previews for images, video, PDFs, and text files
-- Keeps `ffmpeg` and `ffprobe` optional
-- Preserves Trash/Recycling behavior instead of permanently deleting by default
-- Includes safeguards for risky roots such as the home folder and Photos libraries
+## Highlights
+
+- Fast default scan: full hashing for small files and sampled hashing for large files
+- Optional exact verification with `--full-verify`
+- Local browser review UI with filters, sortable table/list views, and a side preview pane
+- Previews for images, videos, audio, PDFs, and text files
+- Media metadata when optional tools are installed: duration, dimensions, codec, bitrate, and EXIF
+- Recoverable cleanup by default: Trash, `/usr/bin/trash`, or same-volume NAS recycle folders when available
+- Safety checks for filesystem roots, home root scans, macOS Photos libraries, stale selections, and symlink replacement
+- Optional empty-folder cleanup after duplicate review
 
 ## Install
 
@@ -27,19 +30,16 @@ Verify the command:
 dedup --help
 ```
 
-Or download `dedup.py` directly and run it with Python:
+## Optional Preview Tools
+
+`dedup` works without these tools, but they improve previews and metadata:
 
 ```sh
-python3 dedup.py /path/to/folder
+brew install ffmpeg        # video thumbnails and media duration, codec, and bitrate
+brew install exiftool      # image EXIF such as camera, lens, aperture, and GPS
 ```
 
-## Optional Media Preview Support
-
-`dedup` works without `ffmpeg`, but image and video thumbnails are better when it is installed:
-
-```sh
-brew install ffmpeg
-```
+`ffmpeg` also provides `ffprobe`, which `dedup` uses for media metadata.
 
 ## Usage
 
@@ -49,49 +49,81 @@ Scan a folder and open the local review UI:
 dedup /path/to/folder
 ```
 
-Dry-run mode lets you exercise the selection flow without moving files:
+Exercise the selection flow without moving files:
 
 ```sh
 dedup /path/to/folder --dry-run
 ```
 
-Use exact content verification after the fast prefilter:
+Fully hash candidate matches after the fast prefilter:
 
 ```sh
 dedup /path/to/folder --full-verify
 ```
 
-Clean empty folders after the duplicate-file review:
+Review empty folders after duplicate-file cleanup:
 
 ```sh
 dedup /path/to/folder --clean-empty-dirs
 ```
 
+Use a fixed local UI port:
+
+```sh
+dedup /path/to/folder --port 7979
+```
+
 ## Common Options
 
 ```text
---fast-only              Use sampled chunks only. This is the default.
---full-verify            Fully hash matching candidates for exact verification.
--d, --dry-run            Review selections without moving files.
---include-hidden         Include hidden files and directories.
---ignore-dir NAME        Ignore an additional directory name.
---ignore-file NAME       Ignore an additional file name or suffix.
--e, --clean-empty-dirs   Review and trash empty directories after file cleanup.
+--fast-only                 Use sampled chunks only. This is the default.
+--full-verify               Fully hash matching candidates for exact verification.
+-d, --dry-run               Review selections without moving files.
+--yes                       Skip the final browser confirmation when trashing.
+--include-hidden            Include hidden files and directories.
+--ignore-dir NAME           Ignore an additional directory name.
+--ignore-file NAME          Ignore an additional file name or suffix.
+--allow-home-root           Allow scanning your home directory root.
+--allow-photo-library       Allow scanning inside macOS .photoslibrary packages.
+-e, --clean-empty-dirs      Review and trash empty directories after file cleanup.
+--allow-slow-local-trash    Allow last-resort copies to local ~/.Trash from NAS volumes.
+--permanent-on-no-trash     Permanently delete when a volume has no recoverable trash.
+--port PORT                 Port for the local browser UI.
 ```
 
 Run `dedup --help` for the full option list.
 
-## Safety Notes
+## Safety Model
 
-By default, selected files are moved to Trash or a recoverable same-volume recycle area where supported. Permanent deletion is not the default.
+`dedup` does not permanently delete by default. Selected files are moved to Trash or to an existing same-volume recycle folder where supported.
 
-For NAS or external volumes with no recycle bin, `dedup` avoids slow network copies to local Trash unless explicitly allowed:
+Before destructive actions, `dedup` revalidates selected files against the scanned duplicate groups and aborts if a selected path has been replaced by a symlink. Empty-folder cleanup also rechecks that folders are still empty before removal.
+
+Risky scan roots are guarded. Filesystem roots are refused, home-directory root scans require `--allow-home-root`, and macOS Photos libraries require `--allow-photo-library`.
+
+On macOS external or NAS volumes, `dedup` tries recoverable paths first:
+
+1. `send2trash`
+2. `/usr/bin/trash`
+3. Existing NAS recycle folders such as `#recycle`, `@Recycle`, or `.recycle`
+
+If no recoverable trash path exists, `dedup` skips the file in non-interactive mode. Interactive runs ask what to do. Use `--allow-slow-local-trash` to allow copying into local `~/.Trash`; use `--permanent-on-no-trash` only when irreversible deletion is acceptable.
+
+## Direct Python Use
+
+You can also run the script directly:
 
 ```sh
-dedup /path/to/folder --allow-slow-local-trash
+python3 dedup.py /path/to/folder
 ```
 
-Use `--permanent-on-no-trash` only when you understand that selected files may be irreversibly deleted.
+Install `send2trash` for actual Trash moves when running directly from Python:
+
+```sh
+python3 -m pip install send2trash
+```
+
+Optional preview tools are still discovered from your `PATH`.
 
 ## Update
 
