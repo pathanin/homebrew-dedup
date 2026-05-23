@@ -1,2 +1,5 @@
 testfile/
 old-testfile/
+__pycache__/
+test_dedup.py
+test_popup_port.py
