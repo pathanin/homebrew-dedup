@@ -1123,6 +1123,7 @@ button[aria-pressed="true"], button.active-toggle { border-color: var(--text); }
 .folder-strip { display: none; flex-wrap: wrap; gap: 4px; padding: 4px 16px; background: var(--panel); border-bottom: 1px solid var(--line); flex-shrink: 0; }
 .folder-row { display: inline-flex; flex-direction: column; gap: 1px; padding: 2px 8px; border-radius: 4px; font: inherit; font-size: 10px; text-align: left; border: 1px solid var(--line); background: transparent; cursor: pointer; max-width: 200px; overflow: hidden; }
 .folder-row:hover:not(:disabled) { background: var(--surface); opacity: 1; }
+.folder-row.is-active { background: var(--surface); border-color: var(--text); }
 .folder-row b { color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
 .folder-row span { color: var(--muted); white-space: nowrap; }
 .modal { width: min(440px, 100%); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 20px 60px rgba(0,0,0,.18); padding: 20px; display: grid; gap: 14px; }
@@ -2265,7 +2266,7 @@ function getFolderSummary(filters = getFilters()) {
   return Array.from(folders.values()).sort((a, b) => b.bytes - a.bytes || b.marked - a.marked || a.directory.localeCompare(b.directory));
 }
 function focusFolder(directory) {
-  $("search").value = directory;
+  $("search").value = $("search").value.trim() === directory ? "" : directory;
   setTrashedOnly(false);
   render();
 }
@@ -2277,7 +2278,11 @@ function renderFolderSummary(filters = getFilters()) {
   if (!el) return;
   const rows = getFolderSummary(filters).filter(r => r.marked > 0).slice(0, 8);
   el.style.display = rows.length ? "flex" : "none";
-  el.innerHTML = rows.map(row => `<button class="folder-row" data-directory="${esc(row.directory)}" onclick="focusFolderFromButton(this)" title="${esc(row.directory)}"><b>${esc(row.directory)}</b><span>${row.marked} of ${row.visible} · ${formatSize(row.bytes)}</span></button>`).join("");
+  const activeDir = $("search").value.trim();
+  el.innerHTML = rows.map(row => {
+    const active = row.directory === activeDir;
+    return `<button class="folder-row${active ? ' is-active' : ''}" data-directory="${esc(row.directory)}" onclick="focusFolderFromButton(this)" title="${active ? 'Click to clear filter' : esc(row.directory)}"><b>${esc(row.directory)}</b><span>${row.marked} of ${row.visible} · ${formatSize(row.bytes)}${active ? ' · ×' : ''}</span></button>`;
+  }).join("");
 }
 function showMoveConfirmation() {
   const summary = getTrashDetails();
