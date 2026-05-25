@@ -1073,7 +1073,8 @@ button[aria-pressed="true"], button.active-toggle { border-color: var(--text); }
 .stats-title { font-weight: 600; color: var(--text); }
 .stats-inline { display: flex; gap: 6px; flex-wrap: wrap; }
 .stats-inline b { color: var(--text); font-weight: 600; }
-.filter-hint { margin-left: auto; font-style: italic; }
+.filter-hint { font-style: italic; }
+.summary-actions { display: flex; gap: 6px; align-items: center; margin-left: auto; }
 .content-scroll { overflow-y: scroll; overflow-x: hidden; flex: 1; contain: layout size; }
 .content { padding: 12px 16px; }
 .group { margin-bottom: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; min-height: 100px; }
@@ -1085,6 +1086,7 @@ button[aria-pressed="true"], button.active-toggle { border-color: var(--text); }
 .group-actions .trash-copies { border-color: var(--danger-border); color: var(--danger); background: var(--danger-bg); }
 .group-link { font-size: 11px; color: var(--muted); background: none; border: none; cursor: pointer; padding: 2px 4px; text-decoration: underline; text-underline-offset: 2px; font: inherit; border-radius: 0; }
 .group-link:hover:not(:disabled) { color: var(--text); opacity: 1; }
+.group-impact { font-size: 11px; color: var(--muted); }
 .files { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; padding: 10px; }
 .file { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--panel); position: relative; display: grid; grid-template-rows: 140px 1fr; transition: border-color .12s; }
 .file.is-trash { border-color: var(--danger-border); }
@@ -1104,12 +1106,9 @@ button[aria-pressed="true"], button.active-toggle { border-color: var(--text); }
 .badges { display: flex; gap: 4px; flex-wrap: wrap; align-content: flex-start; min-height: 16px; }
 .badge { font-size: 10px; line-height: 14px; padding: 1px 6px; border-radius: 999px; background: var(--surface); color: var(--muted); height: 16px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .badge.original { background: #fef9c3; color: #854d0e; }
-.badge.reason { background: #dbeafe; color: #1e40af; }
-.badge.manual { background: #ede9fe; color: #5b21b6; }
+.badge.manual { color: var(--text); font-style: italic; }
 @media (prefers-color-scheme: dark) {
   .badge.original { background: #422006; color: #fde68a; }
-  .badge.reason { background: #172554; color: #93c5fd; }
-  .badge.manual { background: #2e1065; color: #c4b5fd; }
 }
 .choice { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--line); margin-top: auto; }
 .choice button { border: 0; border-radius: 0; padding: 6px; font-size: 12px; font-weight: 500; background: transparent; color: var(--muted); }
@@ -1121,6 +1120,11 @@ button[aria-pressed="true"], button.active-toggle { border-color: var(--text); }
 .file:hover .reveal-btn, .file:focus-within .reveal-btn { opacity: 1; }
 .empty-state { padding: 48px 20px; color: var(--muted); text-align: center; display: grid; justify-items: center; gap: 12px; }
 .empty-state button { color: var(--text); }
+.folder-strip { display: none; flex-wrap: wrap; gap: 4px; padding: 4px 16px; background: var(--panel); border-bottom: 1px solid var(--line); flex-shrink: 0; }
+.folder-row { display: inline-flex; flex-direction: column; gap: 1px; padding: 2px 8px; border-radius: 4px; font: inherit; font-size: 10px; text-align: left; border: 1px solid var(--line); background: transparent; cursor: pointer; max-width: 200px; overflow: hidden; }
+.folder-row:hover:not(:disabled) { background: var(--surface); opacity: 1; }
+.folder-row b { color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+.folder-row span { color: var(--muted); white-space: nowrap; }
 .modal { width: min(440px, 100%); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 20px 60px rgba(0,0,0,.18); padding: 20px; display: grid; gap: 14px; }
 .modal.wide { width: min(920px, 100%); max-height: 90vh; overflow: auto; }
 .modal-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
@@ -1152,8 +1156,7 @@ body:not(.pane-open) .pane-resizer { display: none; }
 .pane-resizer { flex: 0 0 5px; background: var(--line); cursor: col-resize; position: relative; flex-shrink: 0; transition: background .15s; }
 .pane-resizer:hover, .pane-resizer.is-dragging { background: var(--muted); }
 .pane-resizer::before { content: ''; position: absolute; top: 0; bottom: 0; left: -6px; right: -6px; cursor: col-resize; }
-.pane-placeholder { display: flex; flex-direction: column; align-items: center; justify-content: center; flex: 1; color: var(--muted); text-align: center; font-size: 13px; gap: 10px; padding: 24px; }
-.pane-placeholder-icon { font-size: 28px; line-height: 1; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.pane-placeholder { display: flex; flex-direction: column; align-items: center; justify-content: center; flex: 1; color: var(--muted); text-align: center; font-size: 13px; gap: 8px; padding: 24px; }
 .pane-preview-area { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; background: var(--surface); position: relative; overflow: hidden; border-bottom: 1px solid var(--line); }
 .pane-preview-area img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
 .pane-preview-area video { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
@@ -1186,7 +1189,7 @@ body.list-view #listViewHeader { display: flex; }
 .lv-col-name { flex: 2; min-width: 100px; }
 .lv-col-dir { flex: 2; min-width: 80px; }
 .lv-col-size { flex: 0 0 76px; }
-.lv-col-count { flex: 0 0 52px; }
+.lv-col-reason { flex: 1; min-width: 60px; cursor: default; }
 .lv-col-actions { flex: 0 0 130px; }
 body.list-view .content { padding: 0; }
 body.list-view .group { border-radius: 0; border-left: 0; border-right: 0; border-top: 0; margin-bottom: 0; min-height: 0; }
@@ -1208,6 +1211,8 @@ body.list-view .lv-preview-btn { display: flex; align-items: center; justify-con
 body.list-view .lv-preview-btn:hover { color: var(--text); background: var(--surface); opacity: 1; }
 .file-type-badge { display: none; }
 .file-size-lv { display: none; }
+.file-reason { display: none; }
+body.list-view .file-reason { flex: 1; min-width: 60px; font-size: 10px; color: var(--muted); padding: 0 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; border-right: 1px solid var(--line); height: 100%; font-style: italic; }
 /* ── Compact modal ───────────────────────────────────── */
 .modal.wide { width: min(600px, 100%); max-height: 80vh; }
 .preview-body { min-height: 200px; }
@@ -1229,17 +1234,20 @@ body.list-view .lv-preview-btn:hover { color: var(--text); background: var(--sur
   <select id="mediaFilter"><option value="">All types</option><option value="image">Images</option><option value="video">Videos</option><option value="audio">Audio</option><option value="pdf">PDFs</option><option value="text">Text</option><option value="other">Other</option></select>
   <select id="sortOrder"><option value="path">Sort: path</option><option value="size">Sort: size</option><option value="count">Sort: count</option><option value="directory">Sort: directory</option><option value="type">Sort: type</option></select>
   <button id="collapseClean" aria-pressed="false">Trashed only</button>
-  <button id="toggleListView" aria-pressed="true">List view</button>
+  <button id="toggleListView" aria-pressed="true">List</button>
   <button id="togglePane" aria-pressed="true">Preview</button>
   <button id="undo" disabled>Undo</button>
-  <button id="cancel">Cancel</button>
-  <button id="finish" class="primary">Use selection</button>
 </header>
 <div class="stats-bar">
-  <span class="stats-title">Duplicate Review</span>
+  <span class="stats-title">Dedup</span>
   <span class="stats-inline"><b id="groupCount">0</b> groups · <b id="fileCount">0</b> files · <b id="trashCount">0</b> marked · <b id="reclaimSize">0 B</b> reclaimable</span>
   <span id="subtitle" class="filter-hint"></span>
+  <div class="summary-actions">
+    <button id="cancel">Cancel</button>
+    <button id="finish" class="primary">Move to Trash</button>
+  </div>
 </div>
+<div class="folder-strip" id="folderSummary"></div>
 <div id="mainArea">
 <div class="content-scroll" id="scrollRoot">
   <div id="listViewHeader">
@@ -1247,7 +1255,7 @@ body.list-view .lv-preview-btn:hover { color: var(--text); background: var(--sur
     <div class="lv-col lv-col-name" data-lv-sort="path">Name</div>
     <div class="lv-col lv-col-dir" data-lv-sort="directory">Directory</div>
     <div class="lv-col lv-col-size" data-lv-sort="size">Size</div>
-    <div class="lv-col lv-col-count" data-lv-sort="count">#</div>
+    <div class="lv-col lv-col-reason">Reason</div>
     <div class="lv-col lv-col-actions">Actions</div>
   </div>
   <section class="content" id="groups"></section>
@@ -1255,8 +1263,7 @@ body.list-view .lv-preview-btn:hover { color: var(--text); background: var(--sur
 <div class="pane-resizer" id="paneResizer"></div>
 <div id="previewPane">
   <div class="pane-placeholder" id="panePlaceholder">
-    <div class="pane-placeholder-icon">(^o^)</div>
-    <p>Click a group to preview</p>
+    <p>Select a file to preview</p>
   </div>
   <div id="paneContent" style="display:none;flex-direction:column;flex:1;min-height:0;overflow:hidden;">
     <div class="pane-preview-area" id="panePreviewArea"></div>
@@ -1428,9 +1435,11 @@ function updateFileCard(fileId) {
   const keepButton = card.querySelector(".keep");
   const trashButton = card.querySelector(".trash");
   const badges = card.querySelector(".badges");
+  const reasonEl = card.querySelector(".file-reason");
   if (keepButton) keepButton.className = !isTrash ? "active keep" : "keep";
   if (trashButton) trashButton.className = isTrash ? "active trash" : "trash";
   if (badges) badges.innerHTML = fileBadgesHtml(file, isTrash);
+  if (reasonEl) reasonEl.textContent = manualChoices.has(file.id) ? "manual" : (isTrash ? file.selectionReason : file.originalReason) || "";
   if (previewContext && previewContext.fileId === fileId) updatePreviewDecision(fileId);
 }
 function refreshSelectionUi(changedIds = []) {
@@ -2093,13 +2102,12 @@ async function hydrateTextPreviews(root) {
 }
 function fileBadgesHtml(file, isTrash) {
   const badges = [`<span class="badge">${esc(file.sizeLabel)}</span>`];
-  if (file.isOriginalGuess) badges.push(`<span class="badge original">original guess</span>`);
+  if (file.isOriginalGuess) badges.push(`<span class="badge original">original</span>`);
   if (manualChoices.has(file.id)) {
     badges.push(`<span class="badge manual">manual</span>`);
   } else {
     const reason = isTrash ? file.selectionReason : file.originalReason;
-    if (reason) badges.push(`<span class="badge reason">${esc(reason)}</span>`);
-    if (isTrash && file.originalReason && file.originalReason !== reason) badges.push(`<span class="badge reason">${esc(file.originalReason)}</span>`);
+    if (reason) badges.push(`<span class="badge">${esc(reason)}</span>`);
   }
   return badges.join("");
 }
@@ -2121,16 +2129,20 @@ function renderGroupContent(el, group) {
   el.dataset.rendered = "1";
   const files = group._visibleFiles || visibleFilesForGroup(group, getFilters());
   const fileCountLabel = files.length === group.files.length ? `${group.files.length} files` : `${files.length} of ${group.files.length} files`;
+  const groupTrashCount = files.filter(f => trash.has(f.id)).length;
+  const groupTrashBytes = files.reduce((s, f) => trash.has(f.id) ? s + f.size : s, 0);
+  const groupImpactHtml = groupTrashCount > 0 ? `<span class="group-impact">${groupTrashCount} marked · ${formatSize(groupTrashBytes)}</span>` : "";
   const cards = files.map((file) => {
     const isTrash = trash.has(file.id);
     const typeLabel = {"image":"IMG","video":"VID","audio":"AUD","pdf":"PDF","text":"TXT"}[file.previewKind] || "—";
+    const reasonText = manualChoices.has(file.id) ? "manual" : (isTrash ? file.selectionReason : file.originalReason) || "";
     return `<article class="file ${isTrash ? 'is-trash' : 'is-keep'}" data-file-id="${esc(file.id)}">
       <button class="reveal-btn" data-action="reveal" title="Reveal ${esc(file.name)} in Finder/Explorer" aria-label="Reveal ${esc(file.name)} in Finder/Explorer">Open</button>
       <div class="thumb" role="button" tabindex="0" data-action="preview" data-group-id="${esc(group.id)}">${mediaHtml(file)}</div>
-      <div class="meta"><div class="file-type-badge">${esc(typeLabel)}</div><div class="name" title="${esc(file.name)}">${esc(file.name)}</div><div class="path" title="${esc(file.path)}">${esc(file.directory)}</div><div class="badges">${fileBadgesHtml(file, isTrash)}</div><div class="file-size-lv">${esc(file.sizeLabel)}</div><div class="choice"><button class="lv-preview-btn" data-action="preview" data-group-id="${esc(group.id)}" title="Preview">(o)</button><button class="${!isTrash ? 'active keep' : 'keep'}" data-mark="keep">Keep</button><button class="${isTrash ? 'active trash' : 'trash'}" data-mark="trash">Trash</button></div></div>
+      <div class="meta"><div class="file-type-badge">${esc(typeLabel)}</div><div class="name" title="${esc(file.name)}">${esc(file.name)}</div><div class="path" title="${esc(file.path)}">${esc(file.directory)}</div><div class="badges">${fileBadgesHtml(file, isTrash)}</div><div class="file-size-lv">${esc(file.sizeLabel)}</div><div class="file-reason">${esc(reasonText)}</div><div class="choice"><button class="lv-preview-btn" data-action="preview" data-group-id="${esc(group.id)}" title="Preview">(o)</button><button class="${!isTrash ? 'active keep' : 'keep'}" data-mark="keep">Keep</button><button class="${isTrash ? 'active trash' : 'trash'}" data-mark="trash">Trash</button></div></div>
     </article>`;
   }).join("");
-  el.innerHTML = `<div class="group-head"><div class="group-title"><b>${fileCountLabel}</b><span>${esc(group.hashName)} ${esc(group.hash.substring(0,8))}</span></div><div class="group-actions" data-group-id="${esc(group.id)}"><button class="trash-copies" data-group-action="trash">Trash copies</button><button data-group-action="folder">By folder</button><button class="group-link" data-group-action="oldest">Keep oldest</button><button class="group-link" data-group-action="none">Keep all</button></div></div><div class="files">${cards}</div>`;
+  el.innerHTML = `<div class="group-head"><div class="group-title"><b>${fileCountLabel}</b><span>${esc(group.hashName)} ${esc(group.hash.substring(0,8))}</span>${groupImpactHtml}</div><div class="group-actions" data-group-id="${esc(group.id)}"><button class="trash-copies" data-group-action="trash">Trash copies</button><button data-group-action="folder">By folder</button><button class="group-link" data-group-action="oldest">Keep oldest</button><button class="group-link" data-group-action="none">Keep all</button></div></div><div class="files">${cards}</div>`;
   el.onmouseenter = () => {
     el.dataset.hovering = "1";
     hydrateVideoMetadata(el).then(() => {
@@ -2257,8 +2269,9 @@ function focusFolderFromButton(button) {
 function renderFolderSummary(filters = getFilters()) {
   const el = $("folderSummary");
   if (!el) return;
-  const rows = getFolderSummary(filters).slice(0, 8);
-  el.innerHTML = rows.length ? rows.map(row => `<button class="folder-row" data-directory="${esc(row.directory)}" onclick="focusFolderFromButton(this)" title="${esc(row.directory)}"><b>${esc(row.directory)}</b><span>${row.marked} / ${row.visible} marked · ${formatSize(row.bytes)}</span></button>`).join("") : "<span style='color:var(--muted);font-size:11px'>No visible folders</span>";
+  const rows = getFolderSummary(filters).filter(r => r.marked > 0).slice(0, 8);
+  el.style.display = rows.length ? "flex" : "none";
+  el.innerHTML = rows.map(row => `<button class="folder-row" data-directory="${esc(row.directory)}" onclick="focusFolderFromButton(this)" title="${esc(row.directory)}"><b>${esc(row.directory)}</b><span>${row.marked} of ${row.visible} · ${formatSize(row.bytes)}</span></button>`).join("");
 }
 function showMoveConfirmation() {
   const summary = getTrashDetails();
