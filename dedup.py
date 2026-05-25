@@ -1703,15 +1703,18 @@ function initPaneResizer() {
     const saved = localStorage.getItem("dedupPaneWidth");
     if (saved) pane.style.width = Math.max(200, Math.min(Number(saved), window.innerWidth * 0.8)) + "px";
   } catch {}
-  resizer.addEventListener("mousedown", (e) => {
+  resizer.addEventListener("pointerdown", (e) => {
     e.preventDefault();
+    resizer.setPointerCapture(e.pointerId);
     resizer.classList.add("is-dragging");
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
+    const startX = e.clientX;
+    const startWidth = pane.offsetWidth;
+    const maxWidth = mainArea.getBoundingClientRect().width * 0.75;
     let rafPending = false;
     const onMove = (e) => {
-      const rect = mainArea.getBoundingClientRect();
-      const w = Math.max(200, Math.min(rect.right - e.clientX, rect.width * 0.75));
+      const w = Math.max(200, Math.min(startWidth + (startX - e.clientX), maxWidth));
       pane.style.width = w + "px";
       if (!rafPending) {
         rafPending = true;
@@ -1722,12 +1725,15 @@ function initPaneResizer() {
       resizer.classList.remove("is-dragging");
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
-      try { localStorage.setItem("dedupPaneWidth", parseInt(pane.style.width, 10)); } catch {}
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
+      const w = pane.offsetWidth;
+      if (w > 0) try { localStorage.setItem("dedupPaneWidth", w); } catch {}
+      resizer.removeEventListener("pointermove", onMove);
+      resizer.removeEventListener("pointerup", onUp);
+      resizer.removeEventListener("pointercancel", onUp);
     };
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
+    resizer.addEventListener("pointermove", onMove);
+    resizer.addEventListener("pointerup", onUp);
+    resizer.addEventListener("pointercancel", onUp);
   });
 }
 function toggleListView() {
