@@ -8,7 +8,11 @@ It is built for large, messy folders where you want fast duplicate detection, vi
 
 - Fast default scan: full hashing for small files and sampled hashing for large files
 - Optional exact verification with `--full-verify`
-- Local browser review UI with filters, sortable table/list views, and a side preview pane
+- Local browser review UI with filters, sortable list and grid views, and a resizable side preview pane
+- Decision summary bar shows groups, files, marked count, and reclaimable bytes at a glance
+- Per-group marked count and reclaimable size alongside the group actions
+- Folder impact strip highlights which folders hold the most marked files; click to filter, click again to clear
+- Reason column in list view co-locates the original/copy rationale with Keep and Trash controls
 - Previews for images, videos, audio, PDFs, and text files
 - Media metadata when optional tools are installed: duration, dimensions, codec, bitrate, and EXIF
 - Recoverable cleanup by default: Trash, `/usr/bin/trash`, or same-volume NAS recycle folders when available
@@ -72,6 +76,28 @@ Use a fixed local UI port:
 ```sh
 dedup /path/to/folder --port 7979
 ```
+
+## Browser UI
+
+The review UI opens automatically at `http://localhost:7979`.
+
+**Header** — search, type filter, sort order, trashed-only toggle, list/grid toggle, preview pane toggle, and undo.
+
+**Summary bar** — live counts of visible groups, files, marked files, and reclaimable bytes. Finish and Cancel buttons live here so the action cost is always visible.
+
+**Folder strip** — appears below the summary bar when files are marked. Shows up to eight folders ordered by reclaimable bytes. Click a folder to filter the list to that folder; click the same button again to clear the filter.
+
+**Group headers** — each duplicate group shows its file count, hash identifier, and how many files in that group are currently marked and how many bytes would be reclaimed.
+
+**List view** — the default high-density surface. Columns: type, name, directory, size, reason (original or copy rationale), and Keep/Trash actions. Click any column header to sort; click again to reverse. Click a row to load it in the side preview pane.
+
+**Grid view** — toggle with the List button. Shows thumbnail previews for images and videos with hovering frame cycling.
+
+**Side preview pane** — resizable panel on the right. Shows a preview of the selected file and its metadata. Drag the divider to resize; the width is remembered across sessions.
+
+**Preview modal** — click a thumbnail (grid view) or the `(o)` button (list view) for a full-size preview with Keep/Trash controls and prev/next navigation.
+
+**Keyboard shortcuts** — `↑`/`↓` to move between files, `←`/`→` inside the preview modal, `Escape` to close modals.
 
 ## Common Options
 
