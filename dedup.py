@@ -1130,18 +1130,20 @@ button.danger-action:hover:not(:disabled) { opacity: .85; }
 .modal { width: min(440px, 100%); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 20px; display: grid; gap: 14px; }
 .modal.wide { width: min(920px, 100%); max-height: 90vh; overflow: auto; }
 .modal-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.confirm-list, .preview-meta { max-height: 160px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; padding: 8px; background: var(--surface); font-size: 11px; color: var(--muted); }
-.confirm-list div, .preview-meta div { word-break: break-all; margin-bottom: 4px; }
+.confirm-list, .preview-meta { max-height: 160px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; padding: 8px; background: var(--surface); font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.confirm-list div, .preview-meta div { word-break: break-word; overflow-wrap: anywhere; margin-bottom: 4px; }
 .confirm-folders { display: grid; gap: 4px; font-size: 11px; color: var(--muted); }
-.preview-header { display: flex; align-items: flex-start; gap: 12px; justify-content: space-between; }
+.preview-header { display: flex; align-items: flex-start; gap: 12px; justify-content: space-between; min-width: 0; }
+.preview-header > div, .preview-header h2 { min-width: 0; }
+.preview-header h2 { overflow-wrap: anywhere; word-break: break-word; }
 .preview-decision { display: flex; gap: 6px; flex-shrink: 0; }
 .preview-keep-btn { color: var(--keep); border-color: var(--keep-border); background: var(--keep-bg); font-size: 12px; padding: 4px 10px; }
 .preview-keep-btn.active { background: var(--keep); color: #fff; border-color: var(--keep); opacity: 1; }
 .preview-trash-btn { color: var(--danger); border-color: var(--danger-border); background: var(--danger-bg); font-size: 12px; padding: 4px 10px; }
 .preview-trash-btn.active { background: var(--danger); color: #fff; border-color: var(--danger); opacity: 1; }
-.preview-body { min-height: 320px; display: grid; place-items: center; background: var(--surface); border-radius: 8px; overflow: hidden; }
+.preview-body { min-height: 320px; min-width: 0; display: grid; place-items: center; background: var(--surface); border-radius: 8px; overflow: hidden; }
 .preview-body img, .preview-body iframe, .preview-body video { max-width: 100%; width: 100%; max-height: 70vh; border: 0; object-fit: contain; background: var(--panel); }
-.preview-body pre { width: 100%; max-height: 70vh; overflow: auto; margin: 0; padding: 12px; white-space: pre-wrap; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--surface); color: var(--text); }
+.preview-body pre { width: 100%; max-width: 100%; max-height: 70vh; overflow: auto; margin: 0; padding: 12px; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--surface); color: var(--text); }
 .dir-picker { position: absolute; right: 10px; top: 40px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.12); z-index: 20; width: min(460px, 90%); max-height: 400px; overflow: auto; }
 .dir-picker-row { border-bottom: 1px solid var(--line); padding: 10px 12px; }
 .dir-picker-row:last-child { border-bottom: 0; }
@@ -1149,6 +1151,35 @@ button.danger-action:hover:not(:disabled) { opacity: .85; }
 .dir-picker-impact { font-size: 10px; color: var(--muted); margin-bottom: 8px; }
 .dir-picker-btns { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
 .dir-picker button { padding: 3px 8px; font-size: 10px; font-weight: 600; }
+.folder-rules-modal { gap: 12px; width: min(920px, 100%); max-height: 90vh; }
+.folder-rules-active, .folder-rules-preview { display: grid; gap: 6px; font-size: 12px; }
+.folder-rules-help { color: var(--muted); }
+.folder-rule-chip { display: flex; gap: 8px; align-items: center; justify-content: space-between; border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; background: var(--surface); }
+.folder-rule-chip-main { display: flex; gap: 6px; align-items: center; min-width: 0; }
+.rule-pill { border-radius: 999px; padding: 1px 6px; font-size: 10px; font-weight: 700; letter-spacing: .04em; }
+.rule-pill.keep { background: var(--keep-bg); color: var(--keep); }
+.rule-pill.trash { background: var(--danger-bg); color: var(--danger); }
+.rule-pill.scope { background: var(--panel); color: var(--muted); border: 1px solid var(--line); }
+.folder-rule-chip-path { color: var(--muted); word-break: break-all; }
+.folder-rule-chip button { padding: 2px 7px; font-size: 11px; }
+.folder-rules-preview { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: var(--surface); color: var(--muted); }
+.folder-rules-preview b { color: var(--text); }
+.folder-rules-preview-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px; }
+.folder-rules-metric { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.folder-rules-metric .danger { color: var(--danger); font-weight: 700; }
+.folder-rules-metric .keep { color: var(--keep); font-weight: 700; }
+.folder-rules-warning { color: var(--danger); font-size: 11px; }
+.folder-rules-preview-list { display: grid; gap: 3px; font-size: 11px; }
+.folder-rules-list { display: grid; gap: 6px; max-height: 360px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+.folder-rule-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; border-bottom: 1px solid var(--line); padding: 7px 0; }
+.folder-rule-row:last-child { border-bottom: 0; }
+.folder-rule-name { color: var(--text); font-size: 12px; font-weight: 600; word-break: break-all; }
+.folder-rule-path { color: var(--muted); word-break: break-all; font-size: 11px; }
+.folder-rule-stats { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.folder-rule-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.folder-rule-actions label { display: flex; gap: 4px; align-items: center; color: var(--muted); font-size: 11px; white-space: nowrap; }
+.folder-rule-actions button { padding: 3px 8px; font-size: 11px; }
+@media (max-width: 640px) { .folder-rules-preview-grid { grid-template-columns: 1fr; } .folder-rule-row { grid-template-columns: 1fr; } .folder-rule-actions { justify-content: stretch; } .folder-rule-actions button { flex: 1; } }
 /* ── Main area: groups list + side pane ──────────────── */
 #mainArea { display: flex; flex: 1; min-height: 0; overflow: hidden; }
 #mainArea > .content-scroll { flex: 1; min-width: 0; }
@@ -1159,7 +1190,8 @@ body:not(.pane-open) .pane-resizer { display: none; }
 .pane-resizer:hover, .pane-resizer.is-dragging { background: var(--muted); }
 .pane-resizer::before { content: ''; position: absolute; top: 0; bottom: 0; left: -6px; right: -6px; cursor: col-resize; }
 .pane-placeholder { display: flex; flex-direction: column; align-items: center; justify-content: center; flex: 1; color: var(--muted); text-align: center; font-size: 13px; gap: 8px; padding: 24px; }
-.pane-preview-area { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; background: var(--surface); position: relative; overflow: hidden; border-bottom: 1px solid var(--line); }
+.pane-preview-area { flex: 1; min-height: 0; min-width: 0; display: flex; align-items: center; justify-content: center; background: var(--surface); position: relative; overflow: hidden; border-bottom: 1px solid var(--line); }
+.pane-preview-area pre { max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
 .pane-preview-area img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }
 .pane-preview-area video { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
 .pane-preview-area iframe { width: 100%; height: 100%; border: 0; background: var(--panel); display: block; }
@@ -1217,6 +1249,7 @@ body.list-view .lv-preview-btn:hover { color: var(--text); background: var(--sur
 body.list-view .file-reason { flex: 1; min-width: 60px; font-size: 10px; color: var(--muted); padding: 0 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; border-right: 1px solid var(--line); height: 100%; font-style: italic; }
 /* ── Compact modal ───────────────────────────────────── */
 .modal.wide { width: min(600px, 100%); max-height: 80vh; }
+.preview-modal { width: min(900px, 100%); max-height: 90vh; }
 .preview-body { min-height: 200px; }
 .preview-body img, .preview-body video { max-height: 50vh; }
 .preview-body pre { max-height: 40vh; }
@@ -1240,6 +1273,7 @@ body.list-view .file-reason { flex: 1; min-width: 60px; font-size: 10px; color: 
   <button id="collapseClean" aria-pressed="false">Trashed only</button>
   <button id="toggleListView" aria-pressed="true">List</button>
   <button id="togglePane" aria-pressed="true">Preview</button>
+  <button id="folderRules">Folder rules…</button>
   <button id="undo" disabled>Undo</button>
   <div class="header-actions">
     <button id="cancel">Cancel</button>
@@ -1287,8 +1321,28 @@ body.list-view .file-reason { flex: 1; min-width: 60px; font-size: 10px; color: 
     </div>
   </div>
 </div>
+<div id="folderRulesOverlay" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="folderRulesTitle">
+  <div class="modal wide folder-rules-modal">
+    <div class="preview-header">
+      <div>
+        <h2 id="folderRulesTitle">Folder rules</h2>
+        <p>Session-only rules for duplicate files only. Preview before applying; manual choices are preserved.</p>
+      </div>
+      <button id="folderRulesClose">Close</button>
+    </div>
+    <div id="folderRulesActive" class="folder-rules-active"></div>
+    <div id="folderRulesPreview" class="folder-rules-preview"></div>
+    <div class="modal-actions">
+      <button id="folderRulesClear">Clear rules</button>
+      <span style="flex:1"></span>
+      <button id="folderRulesApply" class="primary">Apply folder rules</button>
+    </div>
+    <input id="folderRulesSearch" type="search" placeholder="Search folders in duplicate groups">
+    <div id="folderRulesList" class="folder-rules-list"></div>
+  </div>
+</div>
 <div id="previewOverlay" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="previewTitle">
-  <div class="modal wide">
+  <div class="modal wide preview-modal">
     <div class="preview-header">
       <h2 id="previewTitle">Preview</h2>
       <div class="preview-decision">
@@ -1334,6 +1388,11 @@ let paneImageToken = 0;
 let paneVideoToken = 0;
 let paneVideoTimer = null;
 let sortDescending = false;
+let folderRules = [];
+let nextFolderRuleId = 1;
+let folderRulesDirty = false;
+let folderRuleRowsCache = null;
+const folderRuleReasons = new Map();
 const $ = (id) => document.getElementById(id);
 let searchTimeout = null;
 const thumbTimers = new WeakMap();
@@ -1404,20 +1463,208 @@ function getTrashDetails(fileSet = trash) {
   });
   return { count:files.length, bytes, files, folders:Array.from(folders.values()).sort((a, b) => b.bytes - a.bytes || a.directory.localeCompare(b.directory)) };
 }
+function getFolderRuleRows() {
+  if (folderRuleRowsCache) return folderRuleRowsCache;
+  const folders = new Map();
+  allFiles().forEach((file) => {
+    const row = folders.get(file.directory) || { directory:file.directory, count:0, bytes:0 };
+    row.count += 1;
+    row.bytes += file.size;
+    folders.set(file.directory, row);
+  });
+  folderRuleRowsCache = Array.from(folders.values()).sort((a, b) => b.count - a.count || b.bytes - a.bytes || a.directory.localeCompare(b.directory));
+  return folderRuleRowsCache;
+}
+function directoryMatchesRule(directory, rule) {
+  if (directory === rule.directory) return true;
+  if (!rule.subtree) return false;
+  return directory.startsWith(rule.directory + "/") || directory.startsWith(rule.directory + "\\\\");
+}
+function folderRuleSpecificity(directory, rule) {
+  if (!directoryMatchesRule(directory, rule)) return null;
+  return { length: rule.directory.length, exact: directory === rule.directory ? 1 : 0, exactRule: rule.subtree ? 0 : 1 };
+}
+function bestFolderRuleForFile(file) {
+  let best = null;
+  let bestSpec = null;
+  folderRules.forEach((rule) => {
+    const spec = folderRuleSpecificity(file.directory, rule);
+    if (!spec) return;
+    if (!bestSpec || spec.length > bestSpec.length || (spec.length === bestSpec.length && (spec.exact > bestSpec.exact || (spec.exact === bestSpec.exact && spec.exactRule > bestSpec.exactRule)))) {
+      best = rule;
+      bestSpec = spec;
+    }
+  });
+  return best;
+}
+function summarizeChangedFolders(files) {
+  const folders = new Map();
+  files.forEach((file) => {
+    const row = folders.get(file.directory) || { directory:file.directory, count:0, bytes:0 };
+    row.count += 1;
+    row.bytes += file.size;
+    folders.set(file.directory, row);
+  });
+  return Array.from(folders.values()).sort((a, b) => b.bytes - a.bytes || b.count - a.count || a.directory.localeCompare(b.directory));
+}
+function computeFolderRulePreview() {
+  const before = new Set(trash);
+  const beforeReasons = new Map(folderRuleReasons);
+  const nextTrash = new Set(trash);
+  const nextFolderRuleReasons = new Map(folderRuleReasons);
+  const skippedGroups = [];
+  allData.groups.forEach((group) => {
+    const groupBefore = new Set(group.files.filter(f => before.has(f.id)).map(f => f.id));
+    group.files.forEach((file) => {
+      if (manualChoices.has(file.id)) return;
+      nextFolderRuleReasons.delete(file.id);
+      const rule = bestFolderRuleForFile(file);
+      if (rule && rule.type === "keep") {
+        nextTrash.delete(file.id);
+        nextFolderRuleReasons.set(file.id, `folder rule: keep ${rule.subtree ? "subtree" : "folder"}`);
+      } else if (rule && rule.type === "trash") {
+        nextTrash.add(file.id);
+        nextFolderRuleReasons.set(file.id, `folder rule: trash ${rule.subtree ? "subtree" : "folder"}`);
+      } else if (file.defaultTrash) {
+        nextTrash.add(file.id);
+      } else {
+        nextTrash.delete(file.id);
+      }
+    });
+    if (group.files.every(file => nextTrash.has(file.id))) {
+      skippedGroups.push(group);
+      group.files.forEach((file) => {
+        if (groupBefore.has(file.id)) nextTrash.add(file.id);
+        else nextTrash.delete(file.id);
+        if (beforeReasons.has(file.id)) nextFolderRuleReasons.set(file.id, beforeReasons.get(file.id));
+        else nextFolderRuleReasons.delete(file.id);
+      });
+    }
+  });
+  const newlyMarked = allFiles().filter(f => !before.has(f.id) && nextTrash.has(f.id));
+  const newlyProtected = allFiles().filter(f => before.has(f.id) && !nextTrash.has(f.id));
+  const reasonChangedIds = allFiles().filter(f => beforeReasons.get(f.id) !== nextFolderRuleReasons.get(f.id)).map(f => f.id);
+  const stateChangedIds = allFiles().filter(f => before.has(f.id) !== nextTrash.has(f.id)).map(f => f.id);
+  return {
+    nextTrash,
+    nextFolderRuleReasons,
+    newlyMarked,
+    newlyProtected,
+    skippedGroups,
+    changedIds: Array.from(new Set(stateChangedIds.concat(reasonChangedIds))),
+    markedFolders: summarizeChangedFolders(newlyMarked),
+    protectedFolders: summarizeChangedFolders(newlyProtected),
+  };
+}
+function folderRuleLabel(rule) {
+  return `${rule.type === "keep" ? "Keep" : "Mark for Trash"}${rule.subtree ? " subtree" : " exact"}`;
+}
+function basenameForDirectory(directory) {
+  const trimmed = String(directory || ".").replace(/[\\/]+$/, "");
+  const parts = trimmed.split(/[\\/]+/);
+  return parts[parts.length - 1] || trimmed || ".";
+}
+function addFolderRule(directory, type, subtree) {
+  folderRules = folderRules.filter(rule => !(rule.directory === directory && rule.subtree === subtree));
+  folderRules.push({ id:String(nextFolderRuleId++), directory, type, subtree });
+  folderRulesDirty = true;
+  updateFolderRulesButton();
+  renderFolderRulesPanel();
+}
+function removeFolderRule(ruleId) {
+  const beforeCount = folderRules.length;
+  folderRules = folderRules.filter(rule => rule.id !== ruleId);
+  if (folderRules.length !== beforeCount) folderRulesDirty = true;
+  updateFolderRulesButton();
+  renderFolderRulesPanel();
+}
+function clearFolderRules() {
+  const hadRulesOrReasons = folderRules.length > 0 || folderRuleReasons.size > 0;
+  folderRules = [];
+  if (hadRulesOrReasons) folderRulesDirty = true;
+  updateFolderRulesButton();
+  renderFolderRulesPanel();
+}
+function renderFolderRulesPreview() {
+  const el = $("folderRulesPreview");
+  if (!el) return;
+  if (!folderRules.length && !folderRuleReasons.size && !folderRulesDirty) {
+    el.innerHTML = '<div class="folder-rules-help">Add a keep or trash rule from the folder list below. Rules only affect duplicate files and never trash every copy in a group.</div>';
+    $("folderRulesApply").disabled = true;
+    $("folderRulesApply").textContent = "Apply folder rules";
+    return;
+  }
+  const preview = computeFolderRulePreview();
+  const markedBytes = preview.newlyMarked.reduce((sum, f) => sum + f.size, 0);
+  const protectedBytes = preview.newlyProtected.reduce((sum, f) => sum + f.size, 0);
+  const folderList = (rows, empty) => rows.slice(0, 6).map(row => `<div><b>${esc(row.count)}</b> · ${esc(formatSize(row.bytes))} · ${esc(row.directory)}</div>`).join("") || `<div>${empty}</div>`;
+  const skipped = preview.skippedGroups.length ? `<div class="folder-rules-warning">${preview.skippedGroups.length} group(s) skipped because every copy matched trash rules; skipped groups remain unchanged.</div>` : "";
+  el.innerHTML = `<div class="folder-rules-metric"><span><b>${preview.changedIds.length}</b> file(s) would change</span><span class="danger">${esc(formatSize(markedBytes))} newly marked for Trash</span><span class="keep">${esc(formatSize(protectedBytes))} newly protected</span></div>${skipped}<div class="folder-rules-preview-grid"><div><b>Newly marked for Trash</b><div class="folder-rules-preview-list">${folderList(preview.markedFolders, "No files newly marked")}</div></div><div><b>Newly protected</b><div class="folder-rules-preview-list">${folderList(preview.protectedFolders, "No files newly protected")}</div></div></div>`;
+  $("folderRulesApply").disabled = preview.changedIds.length === 0;
+  $("folderRulesApply").textContent = preview.changedIds.length ? `Apply: update ${preview.changedIds.length} file${preview.changedIds.length === 1 ? "" : "s"}` : "Apply: 0 changes";
+}
+function renderFolderRulesPanel() {
+  const active = $("folderRulesActive");
+  if (!active) return;
+  active.innerHTML = folderRules.length ? folderRules.map(rule => `<div class="folder-rule-chip"><span class="folder-rule-chip-main"><span class="rule-pill ${rule.type === "keep" ? "keep" : "trash"}">${rule.type === "keep" ? "KEEP" : "TRASH"}</span><span class="rule-pill scope">${rule.subtree ? "subtree" : "exact"}</span><span class="folder-rule-chip-path">${esc(rule.directory)}</span></span><button data-remove-rule="${esc(rule.id)}">Remove</button></div>`).join("") : '<div class="folder-rules-help">No rules yet. Add a keep or trash rule from the folder list below.</div>';
+  const q = ($("folderRulesSearch")?.value || "").trim().toLowerCase();
+  const rows = getFolderRuleRows().filter(row => !q || row.directory.toLowerCase().includes(q)).slice(0, 200);
+  $("folderRulesList").innerHTML = rows.map((row, idx) => `<div class="folder-rule-row"><div><div class="folder-rule-name">${esc(basenameForDirectory(row.directory))}</div><div class="folder-rule-path">${esc(row.directory)}</div><div class="folder-rule-stats">${row.count} duplicate file(s) · ${esc(formatSize(row.bytes))}</div></div><div class="folder-rule-actions"><label><input type="checkbox" data-rule-subtree="${idx}"> apply to subfolders too</label><button class="keep" data-add-rule="keep" data-dir-index="${idx}">Keep duplicates here</button><button class="danger" data-add-rule="trash" data-dir-index="${idx}">Mark duplicates here for Trash</button></div></div>`).join("") || '<div class="empty-state">No matching folders.</div>';
+  $("folderRulesList")._folderRuleRows = rows;
+  renderFolderRulesPreview();
+}
+function openFolderRules() {
+  renderFolderRulesPanel();
+  $("folderRulesOverlay").classList.add("is-open");
+  $("folderRulesSearch").focus();
+}
+function closeFolderRules(force = false) {
+  if (!force && folderRulesDirty && !window.confirm("Close with unapplied folder rule changes? Rules will stay in this review session.")) return;
+  $("folderRulesOverlay").classList.remove("is-open");
+}
+function applyFolderRules() {
+  const preview = computeFolderRulePreview();
+  if (!preview.changedIds.length) return;
+  recordUndo("folder rules");
+  replaceSet(trash, Array.from(preview.nextTrash));
+  replaceMap(folderRuleReasons, Array.from(preview.nextFolderRuleReasons.entries()));
+  folderRulesDirty = false;
+  updateFolderRulesButton();
+  closeFolderRules(true);
+  refreshSelectionUi(preview.changedIds);
+}
 function replaceSet(target, values) {
   target.clear();
   values.forEach(value => target.add(value));
 }
+function replaceMap(target, entries) {
+  target.clear();
+  entries.forEach(([key, value]) => target.set(key, value));
+}
+function selectionReasonForFile(file, isTrash) {
+  if (manualChoices.has(file.id)) return "manual";
+  return folderRuleReasons.get(file.id) || (isTrash ? file.selectionReason : file.originalReason) || "";
+}
+function updateFolderRulesButton() {
+  const button = $("folderRules");
+  if (!button) return;
+  if (!folderRules.length && !folderRulesDirty) button.textContent = "Folder rules…";
+  else if (!folderRules.length) button.textContent = "Folder rules (unapplied)";
+  else button.textContent = `Folder rules (${folderRules.length}${folderRulesDirty ? " unapplied" : ""})`;
+  button.classList.toggle("active-toggle", folderRules.length > 0 || folderRulesDirty);
+}
 function recordUndo(label) {
-  undoSnapshot = { label, trashIds:Array.from(trash), manualIds:Array.from(manualChoices) };
+  undoSnapshot = { label, trashIds:Array.from(trash), manualIds:Array.from(manualChoices), folderRuleReasonEntries:Array.from(folderRuleReasons.entries()) };
   updateUndoButton();
 }
 function undoLastAction() {
   if (!undoSnapshot) return;
   const before = new Set(trash);
+  const beforeReasons = new Map(folderRuleReasons);
   replaceSet(trash, undoSnapshot.trashIds);
   replaceSet(manualChoices, undoSnapshot.manualIds);
-  const changedIds = allFiles().filter(f => before.has(f.id) !== trash.has(f.id)).map(f => f.id);
+  replaceMap(folderRuleReasons, undoSnapshot.folderRuleReasonEntries || []);
+  const changedIds = allFiles().filter(f => before.has(f.id) !== trash.has(f.id) || beforeReasons.get(f.id) !== folderRuleReasons.get(f.id)).map(f => f.id);
   undoSnapshot = null;
   refreshSelectionUi(changedIds);
 }
@@ -1428,7 +1675,10 @@ function updateUndoButton() {
   button.textContent = undoSnapshot ? `Undo ${undoSnapshot.label}` : "Undo";
 }
 function setManual(ids) {
-  ids.forEach(id => manualChoices.add(id));
+  ids.forEach((id) => {
+    manualChoices.add(id);
+    folderRuleReasons.delete(id);
+  });
 }
 function updateFileCard(fileId) {
   const file = findFile(fileId);
@@ -1444,7 +1694,7 @@ function updateFileCard(fileId) {
   if (keepButton) keepButton.className = !isTrash ? "active keep" : "keep";
   if (trashButton) trashButton.className = isTrash ? "active trash" : "trash";
   if (badges) badges.innerHTML = fileBadgesHtml(file, isTrash);
-  if (reasonEl) reasonEl.textContent = manualChoices.has(file.id) ? "manual" : (isTrash ? file.selectionReason : file.originalReason) || "";
+  if (reasonEl) reasonEl.textContent = selectionReasonForFile(file, isTrash);
   if (previewContext && previewContext.fileId === fileId) updatePreviewDecision(fileId);
 }
 function refreshSelectionUi(changedIds = []) {
@@ -1485,6 +1735,7 @@ function mark(fileId, shouldTrash) {
   recordUndo("last change");
   if (shouldTrash) trash.add(fileId); else trash.delete(fileId);
   manualChoices.add(fileId);
+  folderRuleReasons.delete(fileId);
   refreshSelectionUi([fileId]);
 }
 function applyMarkGroup(baseTrash, group, mode, dirPath, global = false) {
@@ -1895,7 +2146,7 @@ function renderPanePreview(file) {
   } else if (file.previewKind === "pdf") {
     area.innerHTML = `<iframe src="/pdf/${urlId(file.id)}#page=1&toolbar=0&navpanes=0" title="PDF preview"></iframe>`;
   } else if (file.previewKind === "text") {
-    area.innerHTML = `<pre style="width:100%;height:100%;padding:10px;overflow:auto;font:11px/1.4 ui-monospace,monospace;margin:0;background:var(--surface);color:var(--text)" data-pane-text="${esc(file.id)}">Loading...</pre>`;
+    area.innerHTML = `<pre style="width:100%;height:100%;padding:10px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;font:11px/1.4 ui-monospace,monospace;margin:0;background:var(--surface);color:var(--text)" data-pane-text="${esc(file.id)}">Loading...</pre>`;
     hydratePaneText(file.id, area.querySelector("[data-pane-text]"));
   } else {
     area.innerHTML = `<div style="padding:24px;color:var(--muted);text-align:center;font-size:12px;word-break:break-all">${esc(file.name)}</div>`;
@@ -2118,12 +2369,9 @@ async function hydrateTextPreviews(root) {
 function fileBadgesHtml(file, isTrash) {
   const badges = [`<span class="badge">${esc(file.sizeLabel)}</span>`];
   if (file.isOriginalGuess) badges.push(`<span class="badge original">original</span>`);
-  if (manualChoices.has(file.id)) {
-    badges.push(`<span class="badge manual">manual</span>`);
-  } else {
-    const reason = isTrash ? file.selectionReason : file.originalReason;
-    if (reason) badges.push(`<span class="badge">${esc(reason)}</span>`);
-  }
+  const reason = selectionReasonForFile(file, isTrash);
+  if (reason === "manual") badges.push(`<span class="badge manual">manual</span>`);
+  else if (reason) badges.push(`<span class="badge">${esc(reason)}</span>`);
   return badges.join("");
 }
 async function revealFile(fileId, button) {
@@ -2150,7 +2398,7 @@ function renderGroupContent(el, group) {
   const cards = files.map((file) => {
     const isTrash = trash.has(file.id);
     const typeLabel = {"image":"IMG","video":"VID","audio":"AUD","pdf":"PDF","text":"TXT"}[file.previewKind] || "—";
-    const reasonText = manualChoices.has(file.id) ? "manual" : (isTrash ? file.selectionReason : file.originalReason) || "";
+    const reasonText = selectionReasonForFile(file, isTrash);
     return `<article class="file ${isTrash ? 'is-trash' : 'is-keep'}" data-file-id="${esc(file.id)}">
       <button class="reveal-btn" data-action="reveal" title="Reveal ${esc(file.name)} in Finder/Explorer" aria-label="Reveal ${esc(file.name)} in Finder/Explorer">Open</button>
       <div class="thumb" role="button" tabindex="0" data-action="preview" data-group-id="${esc(group.id)}">${mediaHtml(file)}</div>
@@ -2377,6 +2625,7 @@ async function submitSelection(cancelled) {
   }
 }
 function appendClientIndexes(groups) {
+  folderRuleRowsCache = null;
   groups.forEach((group) => {
     groupById.set(group.id, group);
     group.files.forEach((file) => {
@@ -2442,9 +2691,29 @@ async function init() {
   try { const lv = localStorage.getItem("dedupListView"); if (lv !== null) listViewMode = lv === "true"; } catch {}
   applyPaneOpen();
   applyListView();
+  updateFolderRulesButton();
   initPaneResizer();
   $("togglePane").addEventListener("click", togglePane);
   $("toggleListView").addEventListener("click", toggleListView);
+  $("folderRules").addEventListener("click", openFolderRules);
+  $("folderRulesClose").addEventListener("click", closeFolderRules);
+  $("folderRulesClear").addEventListener("click", clearFolderRules);
+  $("folderRulesApply").addEventListener("click", applyFolderRules);
+  $("folderRulesSearch").addEventListener("input", renderFolderRulesPanel);
+  $("folderRulesOverlay").addEventListener("click", (event) => { if (event.target.id === "folderRulesOverlay") closeFolderRules(); });
+  $("folderRulesActive").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-remove-rule]");
+    if (button) removeFolderRule(button.dataset.removeRule);
+  });
+  $("folderRulesList").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-add-rule]");
+    if (!button) return;
+    const rows = $("folderRulesList")._folderRuleRows || [];
+    const row = rows[Number(button.dataset.dirIndex)];
+    if (!row) return;
+    const subtree = Boolean($("folderRulesList").querySelector(`[data-rule-subtree="${button.dataset.dirIndex}"]`)?.checked);
+    addFolderRule(row.directory, button.dataset.addRule, subtree);
+  });
   $("listViewHeader").addEventListener("click", (e) => {
     const col = e.target.closest("[data-lv-sort]");
     if (!col) return;
@@ -2481,13 +2750,14 @@ async function init() {
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       if ($("previewOverlay").classList.contains("is-open")) closePreview();
+      else if ($("folderRulesOverlay").classList.contains("is-open")) closeFolderRules();
       else if ($("confirmOverlay").classList.contains("is-open")) hideMoveConfirmation();
     }
     if (isTextInputTarget(event.target)) return;
     if ($("previewOverlay").classList.contains("is-open")) {
       if (event.key === "ArrowLeft") { event.preventDefault(); navigatePreview(-1); }
       if (event.key === "ArrowRight") { event.preventDefault(); navigatePreview(1); }
-    } else if (!$("confirmOverlay").classList.contains("is-open")) {
+    } else if (!$("confirmOverlay").classList.contains("is-open") && !$("folderRulesOverlay").classList.contains("is-open")) {
       if (event.key === "ArrowDown") { event.preventDefault(); navigateMainView(1); }
       if (event.key === "ArrowUp") { event.preventDefault(); navigateMainView(-1); }
     }
