@@ -1070,22 +1070,23 @@ button#cancel { background: transparent; border-color: transparent; color: var(-
 button#cancel:hover { color: var(--text); opacity: 1; }
 button[aria-pressed="true"], button.active-toggle { border-color: var(--text); }
 .stats-bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 6px 16px; background: var(--surface); border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); flex-shrink: 0; }
-.stats-title { font-weight: 600; color: var(--text); }
 .stats-inline { display: flex; gap: 6px; flex-wrap: wrap; }
 .stats-inline b { color: var(--text); font-weight: 600; }
 .filter-hint { font-style: italic; }
-.summary-actions { display: flex; gap: 6px; align-items: center; margin-left: auto; }
+.header-divider { width: 1px; background: var(--line); align-self: stretch; margin: 0 2px; flex-shrink: 0; }
+.header-actions { display: flex; gap: 6px; align-items: center; margin-left: auto; }
+button.danger-action { background: var(--danger); border-color: var(--danger); color: #fff; }
+button.danger-action:hover:not(:disabled) { opacity: .85; }
+.folder-clear { margin-left: 2px; font-style: normal; }
 .content-scroll { overflow-y: scroll; overflow-x: hidden; flex: 1; contain: layout size; }
 .content { padding: 12px 16px; }
 .group { margin-bottom: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; min-height: 100px; }
-.group-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--surface); font-size: 12px; }
+.group-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px; background: var(--surface); font-size: 12px; }
 .group-title { min-width: 0; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .group-title span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .group-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .group-actions > button { font-size: 11px; padding: 3px 8px; border-radius: 4px; }
 .group-actions .trash-copies { border-color: var(--danger-border); color: var(--danger); background: var(--danger-bg); }
-.group-link { font-size: 11px; color: var(--muted); background: none; border: none; cursor: pointer; padding: 2px 4px; text-decoration: underline; text-underline-offset: 2px; font: inherit; border-radius: 0; }
-.group-link:hover:not(:disabled) { color: var(--text); opacity: 1; }
 .group-impact { font-size: 11px; color: var(--muted); }
 .files { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; padding: 10px; }
 .file { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--panel); position: relative; display: grid; grid-template-rows: 140px 1fr; transition: border-color .12s; }
@@ -1104,7 +1105,7 @@ button[aria-pressed="true"], button.active-toggle { border-color: var(--text); }
 .name { font-weight: 600; font-size: 12px; word-break: break-all; line-height: 1.3; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .path { color: var(--muted); font-size: 11px; word-break: break-all; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .badges { display: flex; gap: 4px; flex-wrap: wrap; align-content: flex-start; min-height: 16px; }
-.badge { font-size: 10px; line-height: 14px; padding: 1px 6px; border-radius: 999px; background: var(--surface); color: var(--muted); height: 16px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.badge { font-size: 11px; line-height: 16px; padding: 1px 6px; border-radius: 999px; background: var(--surface); color: var(--muted); height: 18px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .badge.original { background: #fef9c3; color: #854d0e; }
 .badge.manual { color: var(--text); font-style: italic; }
 @media (prefers-color-scheme: dark) {
@@ -1126,7 +1127,7 @@ button[aria-pressed="true"], button.active-toggle { border-color: var(--text); }
 .folder-row.is-active { background: var(--surface); border-color: var(--text); }
 .folder-row b { color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
 .folder-row span { color: var(--muted); white-space: nowrap; }
-.modal { width: min(440px, 100%); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 20px 60px rgba(0,0,0,.18); padding: 20px; display: grid; gap: 14px; }
+.modal { width: min(440px, 100%); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 20px; display: grid; gap: 14px; }
 .modal.wide { width: min(920px, 100%); max-height: 90vh; overflow: auto; }
 .modal-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .confirm-list, .preview-meta { max-height: 160px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; padding: 8px; background: var(--surface); font-size: 11px; color: var(--muted); }
@@ -1226,6 +1227,7 @@ body.list-view .file-reason { flex: 1; min-width: 60px; font-size: 10px; color: 
   .thumb { height: 110px; }
   .thumb img { max-height: 110px; }
   #previewPane { display: none !important; }
+  .header-divider { display: none; }
 }
 </style>
 </head>
@@ -1234,19 +1236,19 @@ body.list-view .file-reason { flex: 1; min-width: 60px; font-size: 10px; color: 
   <input id="search" type="search" placeholder="Filter by name, folder, or path">
   <select id="mediaFilter"><option value="">All types</option><option value="image">Images</option><option value="video">Videos</option><option value="audio">Audio</option><option value="pdf">PDFs</option><option value="text">Text</option><option value="other">Other</option></select>
   <select id="sortOrder"><option value="path">Sort: path</option><option value="size">Sort: size</option><option value="count">Sort: count</option><option value="directory">Sort: directory</option><option value="type">Sort: type</option></select>
+  <div class="header-divider" aria-hidden="true"></div>
   <button id="collapseClean" aria-pressed="false">Trashed only</button>
   <button id="toggleListView" aria-pressed="true">List</button>
   <button id="togglePane" aria-pressed="true">Preview</button>
   <button id="undo" disabled>Undo</button>
-</header>
-<div class="stats-bar">
-  <span class="stats-title">Dedup</span>
-  <span class="stats-inline"><b id="groupCount">0</b> groups · <b id="fileCount">0</b> files · <b id="trashCount">0</b> marked · <b id="reclaimSize">0 B</b> reclaimable</span>
-  <span id="subtitle" class="filter-hint"></span>
-  <div class="summary-actions">
+  <div class="header-actions">
     <button id="cancel">Cancel</button>
     <button id="finish" class="primary">Move to Trash</button>
   </div>
+</header>
+<div class="stats-bar">
+  <span class="stats-inline"><b id="groupCount">0</b> groups · <b id="fileCount">0</b> files · <b id="trashCount">0</b> marked · <b id="reclaimSize">0 B</b> reclaimable</span>
+  <span id="subtitle" class="filter-hint"></span>
 </div>
 <div class="folder-strip" id="folderSummary"></div>
 <div id="mainArea">
@@ -1281,7 +1283,7 @@ body.list-view .file-reason { flex: 1; min-width: 60px; font-size: 10px; color: 
     <div id="confirmPaths" class="confirm-list"></div>
     <div class="modal-actions">
       <button id="confirmBack">Review again</button>
-      <button id="confirmMove" class="primary">Move to trash</button>
+      <button id="confirmMove" class="danger-action">Move to trash</button>
     </div>
   </div>
 </div>
@@ -1300,6 +1302,8 @@ body.list-view .file-reason { flex: 1; min-width: 60px; font-size: 10px; color: 
       <button id="previewPrev">&#8592; Prev</button>
       <button id="previewNext">Next &#8594;</button>
       <span style="flex:1"></span>
+      <button id="previewKeep2" class="preview-keep-btn">Keep</button>
+      <button id="previewTrash2" class="preview-trash-btn">Trash</button>
       <button id="previewClose">Close</button>
     </div>
   </div>
@@ -1985,8 +1989,12 @@ function updatePreviewDecision(fileId) {
   const isTrash = trash.has(fileId);
   const keepBtn = $("previewKeep");
   const trashBtn = $("previewTrash");
+  const keepBtn2 = $("previewKeep2");
+  const trashBtn2 = $("previewTrash2");
   if (keepBtn) keepBtn.classList.toggle("active", !isTrash);
   if (trashBtn) trashBtn.classList.toggle("active", isTrash);
+  if (keepBtn2) keepBtn2.classList.toggle("active", !isTrash);
+  if (trashBtn2) trashBtn2.classList.toggle("active", isTrash);
 }
 function updatePreviewNav() {
   if (!previewContext) return;
@@ -2149,7 +2157,7 @@ function renderGroupContent(el, group) {
       <div class="meta"><div class="file-type-badge">${esc(typeLabel)}</div><div class="name" title="${esc(file.name)}">${esc(file.name)}</div><div class="path" title="${esc(file.path)}">${esc(file.directory)}</div><div class="badges">${fileBadgesHtml(file, isTrash)}</div><div class="file-size-lv">${esc(file.sizeLabel)}</div><div class="file-reason">${esc(reasonText)}</div><div class="choice"><button class="lv-preview-btn" data-action="preview" data-group-id="${esc(group.id)}" title="Preview">(o)</button><button class="${!isTrash ? 'active keep' : 'keep'}" data-mark="keep">Keep</button><button class="${isTrash ? 'active trash' : 'trash'}" data-mark="trash">Trash</button></div></div>
     </article>`;
   }).join("");
-  el.innerHTML = `<div class="group-head"><div class="group-title"><b>${fileCountLabel}</b><span>${esc(group.hashName)} ${esc(group.hash.substring(0,8))}</span>${groupImpactHtml}</div><div class="group-actions" data-group-id="${esc(group.id)}"><button class="trash-copies" data-group-action="trash">Trash copies</button><button data-group-action="folder">By folder</button><button class="group-link" data-group-action="oldest">Keep oldest</button><button class="group-link" data-group-action="none">Keep all</button></div></div><div class="files">${cards}</div>`;
+  el.innerHTML = `<div class="group-head"><div class="group-title"><b>${fileCountLabel}</b><span title="${esc(group.hashName + ' ' + group.hash)}" style="cursor:help">${esc(group.hashName)}</span>${groupImpactHtml}</div><div class="group-actions" data-group-id="${esc(group.id)}"><button class="trash-copies" data-group-action="trash">Trash copies</button><button data-group-action="folder">By folder</button><button data-group-action="oldest">Keep oldest</button><button data-group-action="none">Keep all</button></div></div><div class="files">${cards}</div>`;
   el.onmouseenter = () => {
     el.dataset.hovering = "1";
     hydrateVideoMetadata(el).then(() => {
@@ -2281,7 +2289,7 @@ function renderFolderSummary(filters = getFilters()) {
   const activeDir = $("search").value.trim();
   el.innerHTML = rows.map(row => {
     const active = row.directory === activeDir;
-    return `<button class="folder-row${active ? ' is-active' : ''}" data-directory="${esc(row.directory)}" onclick="focusFolderFromButton(this)" title="${active ? 'Click to clear filter' : esc(row.directory)}"><b>${esc(row.directory)}</b><span>${row.marked} of ${row.visible} · ${formatSize(row.bytes)}${active ? ' · ×' : ''}</span></button>`;
+    return `<button class="folder-row${active ? ' is-active' : ''}" data-directory="${esc(row.directory)}" onclick="focusFolderFromButton(this)" title="${active ? 'Click to clear filter' : esc(row.directory)}"><b>${esc(row.directory)}</b><span>${row.marked} of ${row.visible} · ${formatSize(row.bytes)}${active ? '<span class="folder-clear" aria-label="clear"> ×</span>' : ''}</span></button>`;
   }).join("");
 }
 function showMoveConfirmation() {
@@ -2468,6 +2476,8 @@ async function init() {
   $("previewNext").addEventListener("click", () => navigatePreview(1));
   $("previewKeep").addEventListener("click", () => { if (previewContext) { mark(previewContext.fileId, false); } });
   $("previewTrash").addEventListener("click", () => { if (previewContext) { mark(previewContext.fileId, true); } });
+  $("previewKeep2").addEventListener("click", () => { if (previewContext) { mark(previewContext.fileId, false); } });
+  $("previewTrash2").addEventListener("click", () => { if (previewContext) { mark(previewContext.fileId, true); } });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       if ($("previewOverlay").classList.contains("is-open")) closePreview();

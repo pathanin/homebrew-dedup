@@ -1,0 +1,52 @@
+{
+  "/Users/oat/Documents/homebrew-dedup/dedup.py": {
+    "mtime": 1779713623.7659428,
+    "ast_hash": "02f9fc53c3528c75fdf63fa51f987aec",
+    "semantic_hash": ""
+  },
+  "/Users/oat/Documents/homebrew-dedup/.claude/settings.local.json": {
+    "mtime": 1779621065.5077696,
+    "ast_hash": "e911097cd9aea96364caae9c96ea37e3",
+    "semantic_hash": ""
+  },
+  "/Users/oat/Documents/homebrew-dedup/Formula/dedup.rb": {
+    "mtime": 1779705212.6393685,
+    "ast_hash": "a0624e046a7ca8a45169e4e4648f5c8c",
+    "semantic_hash": ""
+  },
+  "/Users/oat/Documents/homebrew-dedup/README.md": {
+    "mtime": 1779704879.9372067,
+    "ast_hash": "b33dcd1f89ac997dacfaa6a033aeddeb",
+    "semantic_hash": ""
+  },
+  "/Users/oat/Documents/homebrew-dedup/AGENTS.md": {
+    "mtime": 1779604507.6513536,
+    "ast_hash": "7c0609cc99c0e900b78b3670d037e687",
+    "semantic_hash": ""
+  },
+  "/Users/oat/Documents/homebrew-dedup/CLAUDE.md": {
+    "mtime": 1779604431.9049711,
+    "ast_hash": "bc726c18e382a0b158e7ad2ce09a7660",
+    "semantic_hash": ""
+  },
+  "/Users/oat/Documents/homebrew-dedup/.opencode/opencode.json": {
+    "mtime": 1779604507.6517751,
+    "ast_hash": "abcc8b9dcd80bca5f9dde6d9f0c3ae79",
+    "semantic_hash": ""
+  },
+  "/Users/oat/Documents/homebrew-dedup/.opencode/plugins/graphify.js": {
+    "mtime": 1779604507.6516595,
+    "ast_hash": "64ccd3c03dbfe0980b6095766f5c4e52",
+    "semantic_hash": ""
+  },
+  "/Users/oat/Documents/homebrew-dedup/.claude/settings.json": {
+    "mtime": 1779621075.5696468,
+    "ast_hash": "2e2a9ac8a15b93ddfad82a8ee0932aa8",
+    "semantic_hash": ""
+  },
+  "/Users/oat/Documents/homebrew-dedup/.codex/hooks.json": {
+    "mtime": 1779604528.8116534,
+    "ast_hash": "cb8907d3c7a3e2a5e2dbaa391ed18167",
+    "semantic_hash": ""
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "/Users/oat/Documents/homebrew-dedup/dedup.py": {
+    "mtime": 1779541498.2211914,
+    "ast_hash": "79cc3c5aaf9e79a86343ad04b7a65fb8",
+    "semantic_hash": "79cc3c5aaf9e79a86343ad04b7a65fb8"
+  },
+  "/Users/oat/Documents/homebrew-dedup/.claude/settings.local.json": {
+    "mtime": 1779604263.497504,
+    "ast_hash": "7b550b54895a6690dd100d3416c5d629",
+    "semantic_hash": "7b550b54895a6690dd100d3416c5d629"
+  },
+  "/Users/oat/Documents/homebrew-dedup/Formula/dedup.rb": {
+    "mtime": 1779542084.7909172,
+    "ast_hash": "8819f52da4fb8033204943e8466873af",
+    "semantic_hash": "8819f52da4fb8033204943e8466873af"
+  },
+  "/Users/oat/Documents/homebrew-dedup/README.md": {
+    "mtime": 1779539591.339555,
+    "ast_hash": "a366572fd086bc169d61b65e651df3ed",
+    "semantic_hash": "a366572fd086bc169d61b65e651df3ed"
+  },
+  "/Users/oat/Documents/homebrew-dedup/AGENTS.md": {
+    "mtime": 1779521507.641071,
+    "ast_hash": "21607ba214d402299073cbd07f3c460c",
+    "semantic_hash": "21607ba214d402299073cbd07f3c460c"
+  },
+  "/Users/oat/Documents/homebrew-dedup/CLAUDE.md": {
+    "mtime": 1779521473.4722612,
+    "ast_hash": "cfb0c4a86e60d4b62e3035f25b478eeb",
+    "semantic_hash": "cfb0c4a86e60d4b62e3035f25b478eeb"
+  }
+}
