@@ -70,21 +70,36 @@ Key code seams (verified this session):
   496 → `build_thumbnail_command` 427.
 - Hover cycling + meta fetch: `hydrateVideoFile` dedup.py:1934, `/meta/{id}` → `serve_meta` 3119.
 
-## NEXT: Phase 3 — hover-cycle frames via mediabunny
-Port `get_video_thumbnail_count` / `get_video_thumbnail_timestamp` (dedup.py:341-354) to JS and
-replace the current hover-cycle `/thumb/{id}?i=N` path with mediabunny multi-frame object URLs.
-Keep the `/thumb/` cycling behavior as fallback when mediabunny is unavailable or `canDecode()`
-is false.
+## Phase 3 — hover-cycle frames via mediabunny (DONE this session)
+Ported `get_video_thumbnail_count` / `get_video_thumbnail_timestamp` to JS as
+`videoThumbnailCount()` / `videoThumbnailTimestamp()`.
+- `hydrateVideoFile()` still uses `/meta/{id}` for duration in this phase, then computes the count
+  client-side so the JS timestamp math matches the server fallback.
+- Grid hover cycling now updates `data-thumb-index` + `data-thumb-timestamp`, clears
+  `data-thumb-loaded`, and calls `hydrateThumb()` instead of assigning `/thumb/{id}?i=N`.
+- Hover preloading now warms the mediabunny object URL cache when possible and falls back to the
+  old ffmpeg image preload when mediabunny is unavailable.
+- The side-pane video thumbnail cycle now uses the same mediabunny-first `hydrateThumb()` path and
+  no longer starts from an immediate `/thumb/` `src`.
+
+## NEXT: Phase 4 — metadata via mediabunny
+Move video duration/dimensions/codec collection from `/meta/{id}` to mediabunny where possible:
+`input.computeDuration()`, `track.getDisplayWidth/Height()`, `track.getCodec()`, and
+`track.getCodecParameterString()`. Keep `/meta/{id}` as fallback and for image EXIF/audio.
 
 ## How to run / verify
 ```bash
-rtk python3 -m unittest -v test_dedup.py   # 97 OK after Phase 2
+rtk python3 -m unittest -v test_dedup.py   # 98 OK after Phase 3 local tests
 python3 dedup.py testfile/ --dry-run       # manual browser check (testfile/ has no video though)
 ```
 Phase 2 smoke used duplicate H.264 files copied from `/tmp/mb-spike/` into
 `/private/tmp/dedup-mb-smoke/`, with `webbrowser.open` suppressed for controlled testing:
 headless Chromium loaded `http://127.0.0.1:7981/` and reported `thumbSource: "mediabunny"` with a
 `blob:http://127.0.0.1:7981/...` grid thumbnail. The ffmpeg fallback path remains unit-covered.
+Phase 3 smoke used the Webwright contract in `/private/tmp/webwright-phase3/` and duplicate
+22-second H.264 files in `/private/tmp/dedup-mb-phase3/`; `final_script_log.txt` shows initial
+frame 0, hover frame 1, and reset frame 0 all using `source: 'mediabunny'` with `blob:` URLs, plus
+`fallback-count: 0`.
 
 ## Watch out for
 - **`test_popup_port` has 8 PRE-EXISTING failures on `main`** (assert popup-window code in
@@ -92,8 +107,7 @@ headless Chromium loaded `http://127.0.0.1:7981/` and reported `thumbSource: "me
   chase them as if Phase 1 broke something. (User aware; left as a separate question.)
 - `test_dedup.py` / `test_popup_port.py` are **gitignored** — edits won't show in `git diff` or
   ship in the tarball, but they still run locally.
-- Working tree also has a large unrelated `graphify-out/` deletion — keep commits scoped to the
-  mediabunny work (`git add dedup.py <plan/handoff>`), don't `git add -A`.
+- `graphify-out/` deletion is already committed separately as `05fa359 Remove generated graphify output`.
 - WebCodecs needs a secure context: `localhost`/`127.0.0.1` OK; LAN-IP access silently falls back
   to ffmpeg. Acceptable.
 - Python 3.8+, stdlib-only (+send2trash) on the server side; `sys.dont_write_bytecode` invariant

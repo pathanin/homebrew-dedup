@@ -115,12 +115,22 @@ Validated with `rtk python3 -m unittest -v test_dedup.py` (97 OK) and a browser 
 duplicate H.264 files from `/tmp/mb-spike/`; headless Chromium reported `thumbSource:
 "mediabunny"` and a `blob:http://127.0.0.1:7981/...` thumbnail source.
 
-### Phase 3 — Hover-cycle frames via mediabunny
-- Port `get_video_thumbnail_count` / `get_video_thumbnail_timestamp` (dedup.py:341-354, pure
-  arithmetic) to JS.
-- Replace the `/thumb/{id}?i=N` cycle source with mediabunny multi-frame
-  (`canvasesAtTimestamps([...])` / repeated `getCanvas`) over computed timestamps; reuse object-URLs.
-- Fallback: if mediabunny path unavailable, cycle `/thumb/?i=N` exactly as today.
+### Phase 3 — Hover-cycle frames via mediabunny ✅ DONE (2026-05-29)
+Ported `get_video_thumbnail_count` / `get_video_thumbnail_timestamp` to JS as
+`videoThumbnailCount()` / `videoThumbnailTimestamp()`. `hydrateVideoFile()` still calls `/meta/{id}`
+for duration in this phase, then computes the count client-side so timestamp selection matches the
+server fallback.
+
+Grid hover cycling now updates `data-thumb-index` and `data-thumb-timestamp`, clears
+`data-thumb-loaded`, and calls `hydrateThumb()` instead of assigning `/thumb/{id}?i=N`. Preloading
+warms `mbThumbCache` via `mbCanvasThumb()` when possible, and falls back to the old ffmpeg image
+preload when mediabunny is unavailable. The side-pane video thumbnail cycle now uses the same
+mediabunny-first path and no longer starts from an immediate `/thumb/` `src`.
+
+Validated with `rtk python3 -m unittest -v test_dedup.py` (98 OK). Browser verification used the
+Webwright contract in `/private/tmp/webwright-phase3/` against duplicate 22-second H.264 files in
+`/private/tmp/dedup-mb-phase3/`: `final_script_log.txt` shows initial frame 0, hover frame 1, and
+reset frame 0 all with `source: 'mediabunny'` and `blob:` URLs; `fallback-count: 0`.
 
 ### Phase 4 — Metadata via mediabunny (reduces ffprobe)
 - In `hydrateVideoFile` (dedup.py:1826): when `mbReady()`, derive duration/width/height/codec from

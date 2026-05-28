@@ -1425,6 +1425,9 @@ const completedThumbPreloads = new Set();
 let thumbPreloadActive = false;
 const mbInputs = new Map();
 const mbThumbCache = new Map();
+const MIN_VIDEO_HOVER_THUMBNAILS = 4;
+const MAX_VIDEO_HOVER_THUMBNAILS = 12;
+const VIDEO_MULTI_THUMBNAIL_SECONDS = 15;
 const observer = new IntersectionObserver((entries) => {
   entries.forEach(entry => {
     const idx = parseInt(entry.target.dataset.index);
@@ -1904,25 +1907,51 @@ async function mbCanvasThumb(fileId, timestamp, w, h, index = 0) {
 function ffmpegThumbUrl(fileId, thumbIndex) {
   return `/thumb/${urlId(fileId)}?i=${thumbIndex}`;
 }
+function videoThumbnailCount(duration) {
+  duration = Number(duration || 0);
+  if (!duration || duration <= VIDEO_MULTI_THUMBNAIL_SECONDS) return 1;
+  return Math.min(MAX_VIDEO_HOVER_THUMBNAILS, Math.max(MIN_VIDEO_HOVER_THUMBNAILS, Math.ceil(duration / 60)));
+}
+function videoThumbnailTimestamp(duration, index, count) {
+  duration = Number(duration || 0);
+  index = Math.max(0, Number(index || 0));
+  count = Math.max(1, Number(count || 1));
+  if (!duration) return 1;
+  if (count <= 1) return Math.min(Math.max(duration * 0.1, 1), Math.max(duration - 0.5, 0));
+  const safeDuration = Math.max(duration - 1, 1);
+  const position = (index + 1) / (count + 1);
+  return Math.min(Math.max(safeDuration * position, 1), Math.max(duration - 0.5, 0));
+}
+function videoThumbDimensions(img) {
+  const rect = img.getBoundingClientRect();
+  return {
+    width: Math.max(160, Math.round(rect.width || img.clientWidth || img.width || 240)),
+    height: Math.max(90, Math.round(rect.height || img.clientHeight || img.height || 140)),
+  };
+}
+function setVideoThumbTimestamp(img, thumbIndex) {
+  const count = Math.max(1, Number(img.dataset.thumbCount || "1"));
+  const duration = Number(img.dataset.thumbDuration || "0");
+  img.dataset.thumbTimestamp = String(videoThumbnailTimestamp(duration, thumbIndex, count));
+}
 async function hydrateThumb(img) {
   if (!img || img.dataset.thumbLoaded === "1") return;
   img.dataset.thumbLoaded = "1";
   const fileId = img.dataset.fileId;
   const thumbIndex = Math.max(0, Number(img.dataset.thumbIndex || "0"));
+  const expectedIndex = String(thumbIndex);
   const fallbackSrc = ffmpegThumbUrl(fileId, thumbIndex);
   try {
     if (!fileId || !(await waitForMediabunny())) throw new Error("mediabunny unavailable");
-    const rect = img.getBoundingClientRect();
-    const width = Math.max(160, Math.round(rect.width || img.clientWidth || img.width || 240));
-    const height = Math.max(90, Math.round(rect.height || img.clientHeight || img.height || 140));
+    const { width, height } = videoThumbDimensions(img);
     const timestamp = Math.max(0, Number(img.dataset.thumbTimestamp || "1"));
     const src = await mbCanvasThumb(fileId, timestamp, width, height, thumbIndex);
-    if (img.isConnected) {
+    if (img.isConnected && img.dataset.thumbIndex === expectedIndex) {
       img.dataset.thumbSource = "mediabunny";
       img.src = src;
     }
   } catch {
-    if (img.isConnected) {
+    if (img.isConnected && img.dataset.thumbIndex === expectedIndex) {
       img.dataset.thumbSource = "ffmpeg";
       img.src = fallbackSrc;
     }
@@ -1939,8 +1968,10 @@ async function hydrateVideoFile(file) {
         const response = await fetch(`/meta/${file.id}`);
         if (!response.ok) throw new Error("metadata failed");
         const payload = await response.json();
-        file.thumbnailCount = Math.max(1, Number(payload.thumbnailCount || 1));
+        file.videoDuration = Number(payload.duration || 0);
+        file.thumbnailCount = file.videoDuration ? videoThumbnailCount(file.videoDuration) : Math.max(1, Number(payload.thumbnailCount || 1));
       } catch {
+        file.videoDuration = 0;
         file.thumbnailCount = 1;
       } finally {
         file.videoMetaLoaded = true;
@@ -1957,7 +1988,10 @@ async function hydrateVideoMetadata(root) {
     const file = findFile(node.dataset.fileId);
     await hydrateVideoFile(file);
     const count = Math.max(1, Number(file && file.thumbnailCount || 1));
+    const duration = Number(file && file.videoDuration || 0);
     node.dataset.thumbCount = String(count);
+    node.dataset.thumbDuration = String(duration);
+    setVideoThumbTimestamp(node, Math.max(0, Number(node.dataset.thumbIndex || "0")));
     node.dataset.metaLoaded = "1";
   }));
 }
@@ -1965,33 +1999,47 @@ function queueVideoThumbPreload(img, thumbIndex) {
   const count = Math.max(1, Number(img.dataset.thumbCount || "1"));
   if (count <= 1) return;
   const normalizedIndex = thumbIndex % count;
-  const key = `${img.dataset.fileId}:${normalizedIndex}`;
+  const { width, height } = videoThumbDimensions(img);
+  const timestamp = videoThumbnailTimestamp(Number(img.dataset.thumbDuration || "0"), normalizedIndex, count);
+  const key = `${img.dataset.fileId}:${normalizedIndex}:${timestamp}:${width}x${height}`;
   if (queuedThumbPreloads.has(key) || completedThumbPreloads.has(key)) return;
   queuedThumbPreloads.add(key);
   thumbPreloadQueue.push({
     key,
     fileId: img.dataset.fileId,
     thumbIndex: normalizedIndex,
+    timestamp,
+    width,
+    height,
     order: Number(img.dataset.videoOrder || "0"),
   });
   thumbPreloadQueue.sort((a, b) => a.order - b.order || a.thumbIndex - b.thumbIndex || a.fileId.localeCompare(b.fileId));
   processVideoThumbPreloadQueue();
 }
-function processVideoThumbPreloadQueue() {
+function preloadFfmpegThumb(fileId, thumbIndex) {
+  return new Promise((resolve) => {
+    const preload = new Image();
+    preload.onload = resolve;
+    preload.onerror = resolve;
+    preload.src = ffmpegThumbUrl(fileId, thumbIndex);
+  });
+}
+async function processVideoThumbPreloadQueue() {
   if (thumbPreloadActive) return;
   const item = thumbPreloadQueue.shift();
   if (!item) return;
   thumbPreloadActive = true;
-  const preload = new Image();
-  const finish = () => {
+  try {
+    if (mbReady()) await mbCanvasThumb(item.fileId, item.timestamp, item.width, item.height, item.thumbIndex);
+    else await preloadFfmpegThumb(item.fileId, item.thumbIndex);
+  } catch {
+    await preloadFfmpegThumb(item.fileId, item.thumbIndex);
+  } finally {
     queuedThumbPreloads.delete(item.key);
     completedThumbPreloads.add(item.key);
     thumbPreloadActive = false;
     processVideoThumbPreloadQueue();
-  };
-  preload.onload = finish;
-  preload.onerror = finish;
-  preload.src = `/thumb/${urlId(item.fileId)}?i=${item.thumbIndex}`;
+  }
 }
 function preloadGroupVideoThumbs(thumbs, index) {
   thumbs
@@ -2013,7 +2061,9 @@ function startGroupVideoThumbCycle(groupEl) {
       const count = Math.max(1, Number(img.dataset.thumbCount || "1"));
       const thumbIndex = index % count;
       img.dataset.thumbIndex = String(thumbIndex);
-      img.src = `/thumb/${urlId(img.dataset.fileId)}?i=${thumbIndex}`;
+      setVideoThumbTimestamp(img, thumbIndex);
+      delete img.dataset.thumbLoaded;
+      hydrateThumb(img);
     });
     preloadGroupVideoThumbs(thumbs, index + 1);
     preloadGroupVideoThumbs(thumbs, index + 2);
@@ -2029,6 +2079,7 @@ function stopGroupVideoThumbCycle(groupEl) {
   groupEl.dataset.thumbIndex = "0";
   getGroupVideoThumbs(groupEl).forEach((img) => {
     img.dataset.thumbIndex = "0";
+    setVideoThumbTimestamp(img, 0);
     delete img.dataset.prefetched;
     delete img.dataset.thumbLoaded;
     hydrateThumb(img);
@@ -2172,6 +2223,14 @@ async function startPaneVideoCycle(file) {
   await hydrateVideoFile(file);
   if (token !== paneVideoToken) return;
   const count = Math.max(1, Number(file.thumbnailCount || 1));
+  const area = $("panePreviewArea");
+  const img = area ? area.querySelector("img[data-pane-video-thumb='1']") : null;
+  if (!img || !img.isConnected || img.dataset.fileId !== file.id) return;
+  img.dataset.thumbCount = String(count);
+  img.dataset.thumbDuration = String(Number(file.videoDuration || 0));
+  setVideoThumbTimestamp(img, 0);
+  delete img.dataset.thumbLoaded;
+  hydrateThumb(img);
   if (count <= 1) return;
   let index = 0;
   const tick = () => {
@@ -2184,7 +2243,9 @@ async function startPaneVideoCycle(file) {
     }
     index = (index + 1) % count;
     img.dataset.thumbIndex = String(index);
-    img.src = `/thumb/${urlId(file.id)}?i=${index}`;
+    setVideoThumbTimestamp(img, index);
+    delete img.dataset.thumbLoaded;
+    hydrateThumb(img);
   };
   paneVideoTimer = setInterval(tick, 650);
 }
@@ -2247,7 +2308,7 @@ function renderPanePreview(file) {
     area.innerHTML = `<img src="/thumb/${urlId(file.id)}" onerror="this.onerror=null;this.src='/media/${urlId(file.id)}'" alt="">`;
     maybeSwitchToOriginal(file);
   } else if (file.mediaKind === "video") {
-    area.innerHTML = `<img src="/thumb/${urlId(file.id)}?i=0" data-pane-video-thumb="1" data-file-id="${esc(file.id)}" data-thumb-index="0" alt=""><button class="pane-play-btn" title="Play video">&#9654;</button>`;
+    area.innerHTML = `<img onerror="fallbackVideoThumb(this)" data-video-thumb="1" data-pane-video-thumb="1" data-file-id="${esc(file.id)}" data-file-name="${esc(file.name)}" data-thumb-index="0" data-thumb-count="1" data-thumb-timestamp="1" alt=""><button class="pane-play-btn" title="Play video">&#9654;</button>`;
     area.querySelector(".pane-play-btn").addEventListener("click", () => startPaneVideo(file));
     startPaneVideoCycle(file);
   } else if (file.mediaKind === "audio") {
