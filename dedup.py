@@ -92,6 +92,23 @@ PHOTOS_LIBRARY_SUFFIXES = (".photoslibrary",)
 FFMPEG_PATH = shutil.which("ffmpeg")
 FFPROBE_PATH = shutil.which("ffprobe")
 EXIFTOOL_PATH = shutil.which("exiftool")
+# mediabunny (browser WebCodecs) is the primary engine for video thumbnails and
+# metadata; ffmpeg/ffprobe stay as the server-side fallback. Must be loaded from a
+# URL that serves a JS MIME type — unpkg's .cjs does; jsDelivr's .cjs is served as
+# application/node and the browser refuses it. Empty string => mediabunny disabled
+# (ffmpeg-only). The bundle exposes a global `Mediabunny`.
+MEDIABUNNY_SRC = "https://unpkg.com/mediabunny@1.45.4/dist/bundles/mediabunny.cjs"
+
+
+def mediabunny_script_tag(src):
+    # `defer` so the CDN fetch never blocks page render; availability is checked
+    # lazily in JS (mbReady) when thumbnails hydrate, by which point it has loaded.
+    if not src:
+        return ""
+    return '<script defer src="' + src + '"></script>\n'
+
+
+MEDIABUNNY_SCRIPT_TAG = mediabunny_script_tag(MEDIABUNNY_SRC)
 COPY_PATTERN = re.compile(r"(\bcopy\b|\bduplicate\b|\s\(\d+\)$)", re.IGNORECASE)
 # NAS server-side recycle folders, checked at the volume root.
 # Synology DSM uses #recycle. QNAP uses @Recycle. Samba recycle often uses .recycle.
@@ -1055,7 +1072,9 @@ def build_browser_html():
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Dedup Review</title>
-<style>"""
+"""
++ MEDIABUNNY_SCRIPT_TAG
++ """<style>"""
 + _SHARED_CSS
 + """
 /* ── page-specific ─────────────────────────────────── */
@@ -1363,6 +1382,9 @@ body.list-view .file-reason { flex: 1; min-width: 60px; font-size: 10px; color: 
   </div>
 </div>
 <script>
+// mediabunny (browser WebCodecs) availability, checked lazily so the deferred CDN
+// script never blocks render. Falsy => fall back to the server ffmpeg thumbnail path.
+function mbReady() { return typeof window.Mediabunny !== "undefined" && window.Mediabunny !== null; }
 let allData = {groups: []};
 let requireMoveConfirmation = false;
 let filteredGroups = [];
