@@ -97,20 +97,26 @@ bundle-loaded integration + ffmpeg-fallback-still-wired guard); full `test_dedup
   MIME-safe, and dedup fully controls the header. `MEDIABUNNY_SRC` then defaults to that local
   path, with the CDN URL as a documented alternative. (Final call is the user's — see report.)
 
-### Phase 2 — Client thumbnail hydration (JS in `build_browser_html`)
-- `async function mbCanvasThumb(fileId, timestamp, w, h)`: Input+UrlSource+CanvasSink+`getCanvas`,
-  returns an object-URL (via `canvas.toBlob`); cache in `mbThumbCache` Map.
-- `async function hydrateThumb(img)`: if `mbReady()` and kind is video → `canDecode()` gate →
-  `mbCanvasThumb` → set `img.src` to object-URL. On *any* failure set
-  `img.src = "/thumb/{id}?i=0"` (ffmpeg), whose existing `onerror="fallbackVideoThumb"` is rung 3.
-- Change video branch of `mediaHtml`/`videoThumbHtml` (dedup.py:2222-2226) to emit the `<img>`
-  **without** an immediate `/thumb/` src (data attributes only), so ffmpeg runs only on fallback —
-  this is what actually reduces the ffmpeg dependency. Keep `onerror="fallbackVideoThumb(this)"`.
-- Trigger `hydrateThumb` lazily from the existing `IntersectionObserver` (dedup.py:1403 / 2581)
-  alongside `hydrateVideoFile`.
+### Phase 2 — Client thumbnail hydration (JS in `build_browser_html`) ✅ DONE (2026-05-29)
+Implemented `waitForMediabunny`, `mbVideoTrack`, `mbCanvasThumb`, `hydrateThumb`, and
+`hydrateVideoThumbs` in the review UI. Grid video thumbnails now start with data attributes and no
+initial `/thumb/` `src`; visible cards hydrate through mediabunny first, using `track.canDecode()`
+before `CanvasSink`, then cache object URLs in `mbThumbCache`. Any failure sets the image source to
+the existing `/thumb/{id}?i=N` ffmpeg endpoint, whose `onerror="fallbackVideoThumb(this)"` remains
+the static fallback. `stopGroupVideoThumbCycle()` now rehydrates the first frame through the same
+primary path after hover cycling stops.
+
+Important timing fix: because the CDN script is `defer` and the inline review UI can render before
+it executes, `hydrateThumb` waits briefly on a shared `waitForMediabunny()` promise before falling
+back. This keeps page render non-blocking while preventing a fast-but-unnecessary ffmpeg fallback
+when unpkg finishes a moment later.
+
+Validated with `rtk python3 -m unittest -v test_dedup.py` (97 OK) and a browser smoke test against
+duplicate H.264 files from `/tmp/mb-spike/`; headless Chromium reported `thumbSource:
+"mediabunny"` and a `blob:http://127.0.0.1:7981/...` thumbnail source.
 
 ### Phase 3 — Hover-cycle frames via mediabunny
-- Port `get_video_thumbnail_count` / `get_video_thumbnail_timestamp` (dedup.py:324-337, pure
+- Port `get_video_thumbnail_count` / `get_video_thumbnail_timestamp` (dedup.py:341-354, pure
   arithmetic) to JS.
 - Replace the `/thumb/{id}?i=N` cycle source with mediabunny multi-frame
   (`canvasesAtTimestamps([...])` / repeated `getCanvas`) over computed timestamps; reuse object-URLs.

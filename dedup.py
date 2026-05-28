@@ -1385,6 +1385,7 @@ body.list-view .file-reason { flex: 1; min-width: 60px; font-size: 10px; color: 
 // mediabunny (browser WebCodecs) availability, checked lazily so the deferred CDN
 // script never blocks render. Falsy => fall back to the server ffmpeg thumbnail path.
 function mbReady() { return typeof window.Mediabunny !== "undefined" && window.Mediabunny !== null; }
+let mbReadyPromise = null;
 let allData = {groups: []};
 let requireMoveConfirmation = false;
 let filteredGroups = [];
@@ -1422,6 +1423,8 @@ const thumbPreloadQueue = [];
 const queuedThumbPreloads = new Set();
 const completedThumbPreloads = new Set();
 let thumbPreloadActive = false;
+const mbInputs = new Map();
+const mbThumbCache = new Map();
 const observer = new IntersectionObserver((entries) => {
   entries.forEach(entry => {
     const idx = parseInt(entry.target.dataset.index);
@@ -1845,6 +1848,89 @@ function showDirPicker(group, event) {
 function getGroupVideoThumbs(groupEl) {
   return Array.from(groupEl.querySelectorAll("img[data-video-thumb='1']"));
 }
+async function waitForMediabunny(timeoutMs = 2500) {
+  if (mbReady()) return true;
+  if (!mbReadyPromise) {
+    mbReadyPromise = new Promise((resolve) => {
+      const started = performance.now();
+      const tick = () => {
+        if (mbReady()) resolve(true);
+        else if (performance.now() - started >= timeoutMs) resolve(false);
+        else setTimeout(tick, 50);
+      };
+      tick();
+    });
+  }
+  const ready = await mbReadyPromise;
+  if (!ready) mbReadyPromise = null;
+  return ready || mbReady();
+}
+async function mbVideoTrack(fileId) {
+  if (!mbReady()) throw new Error("mediabunny unavailable");
+  if (!mbInputs.has(fileId)) {
+    mbInputs.set(fileId, (async () => {
+      const { Input, UrlSource, ALL_FORMATS } = window.Mediabunny;
+      const input = new Input({ formats: ALL_FORMATS, source: new UrlSource(`/media/${urlId(fileId)}`) });
+      const track = await input.getPrimaryVideoTrack();
+      if (!track) throw new Error("no video track");
+      const canDecode = await track.canDecode();
+      return { input, track, canDecode };
+    })().catch((err) => {
+      mbInputs.delete(fileId);
+      throw err;
+    }));
+  }
+  return mbInputs.get(fileId);
+}
+async function canvasObjectUrl(canvas) {
+  const blob = canvas.convertToBlob
+    ? await canvas.convertToBlob({ type: "image/jpeg", quality: 0.82 })
+    : await new Promise(resolve => canvas.toBlob(resolve, "image/jpeg", 0.82));
+  if (!blob) throw new Error("thumbnail blob failed");
+  return URL.createObjectURL(blob);
+}
+async function mbCanvasThumb(fileId, timestamp, w, h, index = 0) {
+  const key = `${fileId}:${index}:${timestamp}:${w}x${h}`;
+  if (mbThumbCache.has(key)) return mbThumbCache.get(key);
+  const { track, canDecode } = await mbVideoTrack(fileId);
+  if (!canDecode) throw new Error("codec unavailable");
+  const { CanvasSink } = window.Mediabunny;
+  const sink = new CanvasSink(track, { width: w, height: h, fit: "contain" });
+  const result = await sink.getCanvas(timestamp);
+  const url = await canvasObjectUrl(result.canvas);
+  mbThumbCache.set(key, url);
+  return url;
+}
+function ffmpegThumbUrl(fileId, thumbIndex) {
+  return `/thumb/${urlId(fileId)}?i=${thumbIndex}`;
+}
+async function hydrateThumb(img) {
+  if (!img || img.dataset.thumbLoaded === "1") return;
+  img.dataset.thumbLoaded = "1";
+  const fileId = img.dataset.fileId;
+  const thumbIndex = Math.max(0, Number(img.dataset.thumbIndex || "0"));
+  const fallbackSrc = ffmpegThumbUrl(fileId, thumbIndex);
+  try {
+    if (!fileId || !(await waitForMediabunny())) throw new Error("mediabunny unavailable");
+    const rect = img.getBoundingClientRect();
+    const width = Math.max(160, Math.round(rect.width || img.clientWidth || img.width || 240));
+    const height = Math.max(90, Math.round(rect.height || img.clientHeight || img.height || 140));
+    const timestamp = Math.max(0, Number(img.dataset.thumbTimestamp || "1"));
+    const src = await mbCanvasThumb(fileId, timestamp, width, height, thumbIndex);
+    if (img.isConnected) {
+      img.dataset.thumbSource = "mediabunny";
+      img.src = src;
+    }
+  } catch {
+    if (img.isConnected) {
+      img.dataset.thumbSource = "ffmpeg";
+      img.src = fallbackSrc;
+    }
+  }
+}
+function hydrateVideoThumbs(root) {
+  Array.from(root.querySelectorAll("img[data-video-thumb='1']")).forEach(hydrateThumb);
+}
 async function hydrateVideoFile(file) {
   if (!file || file.mediaKind !== "video" || file.videoMetaLoaded) return file;
   if (!file.videoMetaPromise) {
@@ -1944,7 +2030,8 @@ function stopGroupVideoThumbCycle(groupEl) {
   getGroupVideoThumbs(groupEl).forEach((img) => {
     img.dataset.thumbIndex = "0";
     delete img.dataset.prefetched;
-    img.src = `/thumb/${urlId(img.dataset.fileId)}?i=0`;
+    delete img.dataset.thumbLoaded;
+    hydrateThumb(img);
   });
 }
 function fallbackVideoThumb(img) {
@@ -2245,7 +2332,7 @@ function mediaHtml(file) {
   if (file.mediaKind === "image") return `<img loading="lazy" src="/thumb/${urlId(file.id)}" onerror="this.onerror=null;this.src='/media/${urlId(file.id)}'" alt="">`;
   if (file.mediaKind === "video") {
     const count = Math.max(1, Number(file.thumbnailCount || 1));
-    return `<img loading="lazy" src="/thumb/${urlId(file.id)}?i=0" onerror="fallbackVideoThumb(this)" data-video-thumb="1" data-file-id="${esc(file.id)}" data-file-name="${esc(file.name)}" data-video-order="${file.defaultSortIndex || 0}" data-thumb-index="0" data-thumb-count="${count}" alt="">`;
+    return `<img loading="lazy" onerror="fallbackVideoThumb(this)" data-video-thumb="1" data-file-id="${esc(file.id)}" data-file-name="${esc(file.name)}" data-video-order="${file.defaultSortIndex || 0}" data-thumb-index="0" data-thumb-count="${count}" data-thumb-timestamp="1" alt="">`;
   }
   if (file.previewKind === "pdf") return `<iframe loading="lazy" src="/pdf/${urlId(file.id)}#page=1&toolbar=0&navpanes=0" title="PDF preview for ${esc(file.name)}"></iframe>`;
   if (file.previewKind === "text") return `<pre class="text-preview" data-text-id="${esc(file.id)}">Loading...</pre>`;
@@ -2438,6 +2525,7 @@ function renderGroupContent(el, group) {
     delete el.dataset.hovering;
     stopGroupVideoThumbCycle(el);
   };
+  hydrateVideoThumbs(el);
   hydrateVideoMetadata(el);
   hydrateTextPreviews(el);
   refreshActiveGroupHighlight();

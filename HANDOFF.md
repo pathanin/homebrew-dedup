@@ -1,7 +1,7 @@
 # Handoff — mediabunny thumbnail/metadata migration
 
 **Branch:** `mediabunny-thumbnails` (off `main`)
-**Last commit:** `ea8a0de Load mediabunny bundle in review UI` (Phase 1)
+**Last completed commit before this handoff:** `ea8a0de Load mediabunny bundle in review UI` (Phase 1)
 **Detailed plan & spike log:** `MEDIABUNNY_PLAN.md` (read it — this is just orientation + next action)
 **Date:** 2026-05-29
 
@@ -48,40 +48,43 @@ function mbReady() { return typeof window.Mediabunny !== "undefined" && window.M
 Tests added to `test_dedup.py` (gitignored, so not in git — still runs): tag boundary, empty/disabled
 case, bundle-loaded integration, ffmpeg-fallback-still-wired guard.
 
-## NEXT: Phase 2 — client thumbnail hydration (the actual win)
-Wire mediabunny into the existing fallback seam. Concrete steps:
-1. JS `async function mbCanvasThumb(fileId, timestamp, w, h)`: build Input+UrlSource('/media/'+id)
-   +CanvasSink, `getCanvas`, return an object-URL via `canvas.toBlob`. Cache in a session
-   `Map` keyed `(fileId,index)` to offset the lost server cache.
-2. JS `async function hydrateThumb(img)`: if `mbReady()` && video && `await track.canDecode()` →
-   set `img.src` to the object-URL. On ANY failure → `img.src = "/thumb/{id}?i=0"` (ffmpeg), whose
-   existing `onerror="fallbackVideoThumb(this)"` is rung 3.
-3. Change the video branch of `mediaHtml`/`videoThumbHtml` (dedup.py ~2222-2226) to emit the
-   video `<img>` **without** an immediate `/thumb/` src (data attributes only) so ffmpeg runs only
-   on fallback — this is what actually reduces the ffmpeg dependency. **Keep** the
-   `onerror="fallbackVideoThumb(this)"` attribute.
-4. Trigger `hydrateThumb` lazily from the existing `IntersectionObserver` (dedup.py:1403, observed
-   at 2581), alongside `hydrateVideoFile`.
+## Phase 2 — client thumbnail hydration (DONE this session)
+Wired mediabunny into the grid thumbnail fallback seam.
+- Added `waitForMediabunny()` so the deferred CDN bundle can finish loading before thumbnail
+  hydration falls back to ffmpeg. Page render still does not block on the CDN.
+- Added `mbVideoTrack()`, `mbCanvasThumb()`, `hydrateThumb()`, and `hydrateVideoThumbs()` in the
+  review UI JS. `track.canDecode()` is checked before `CanvasSink` decode, and successful frames
+  become session-cached `blob:` object URLs.
+- Changed the grid video branch of `mediaHtml()` to emit a data-only `<img>` with no initial
+  `/thumb/` `src`. The existing `onerror="fallbackVideoThumb(this)"` static rung is preserved.
+- Triggered `hydrateVideoThumbs(el)` from `renderGroupContent()`, the existing lazy render path
+  reached by the `IntersectionObserver`.
+- Adjusted `stopGroupVideoThumbCycle()` so leaving hover rehydrates the first frame through the
+  same mediabunny-first path instead of forcing `/thumb/?i=0`.
 
 Key code seams (verified this session):
-- `/media/{id}` Range server: `serve_file_with_range` dedup.py:2842 (206/Content-Range/Accept-Ranges ✓).
-- Grid video thumb `<img ... onerror="fallbackVideoThumb(this)">`: dedup.py ~2226;
-  `fallbackVideoThumb` def at dedup.py:1928 (currently just swaps in a text span).
-- ffmpeg thumbnail path (the fallback, leave intact): `serve_thumbnail` 2992 → `render_thumbnail`
-  479 → `build_thumbnail_command` 410.
-- Hover cycling + meta fetch: `hydrateVideoFile` dedup.py:1826, `/meta/{id}` → `serve_meta` 3009.
+- `/media/{id}` Range server: `serve_file_with_range` dedup.py:2952 (206/Content-Range/Accept-Ranges ✓).
+- Grid video thumb `<img ... onerror="fallbackVideoThumb(this)">`: `mediaHtml` dedup.py:2331;
+  `fallbackVideoThumb` def at dedup.py:2037 (currently just swaps in a text span).
+- ffmpeg thumbnail path (the fallback, leave intact): `serve_thumbnail` 3102 → `render_thumbnail`
+  496 → `build_thumbnail_command` 427.
+- Hover cycling + meta fetch: `hydrateVideoFile` dedup.py:1934, `/meta/{id}` → `serve_meta` 3119.
 
-Then Phase 3 (hover-cycle frames via mediabunny — port `get_video_thumbnail_count`/`_timestamp`
-dedup.py:324-337 to JS), Phase 4 (metadata via mediabunny, keep `serve_meta` as fallback + for
-image EXIF/audio), Phase 5 (tests + docs). See MEDIABUNNY_PLAN.md.
+## NEXT: Phase 3 — hover-cycle frames via mediabunny
+Port `get_video_thumbnail_count` / `get_video_thumbnail_timestamp` (dedup.py:341-354) to JS and
+replace the current hover-cycle `/thumb/{id}?i=N` path with mediabunny multi-frame object URLs.
+Keep the `/thumb/` cycling behavior as fallback when mediabunny is unavailable or `canDecode()`
+is false.
 
 ## How to run / verify
 ```bash
-python3 -m unittest test_dedup -q          # should be 95 OK (incl. 4 new mediabunny tests)
+rtk python3 -m unittest -v test_dedup.py   # 97 OK after Phase 2
 python3 dedup.py testfile/ --dry-run       # manual browser check (testfile/ has no video though)
 ```
-Manual matrix for Phase 2: (a) mediabunny on, (b) undecodable codec → ffmpeg, (c) CDN blocked/offline
-→ ffmpeg, (d) ffmpeg absent → icon. Need a real video folder; testfile/ only has PNG/PDF.
+Phase 2 smoke used duplicate H.264 files copied from `/tmp/mb-spike/` into
+`/private/tmp/dedup-mb-smoke/`, with `webbrowser.open` suppressed for controlled testing:
+headless Chromium loaded `http://127.0.0.1:7981/` and reported `thumbSource: "mediabunny"` with a
+`blob:http://127.0.0.1:7981/...` grid thumbnail. The ffmpeg fallback path remains unit-covered.
 
 ## Watch out for
 - **`test_popup_port` has 8 PRE-EXISTING failures on `main`** (assert popup-window code in
