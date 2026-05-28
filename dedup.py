@@ -1904,6 +1904,26 @@ async function mbCanvasThumb(fileId, timestamp, w, h, index = 0) {
   mbThumbCache.set(key, url);
   return url;
 }
+async function mbVideoMetadata(file) {
+  const { input, track } = await mbVideoTrack(file.id);
+  const payload = { mediaKind: "video" };
+  const duration = Number(await input.computeDuration() || 0);
+  if (duration > 0) payload.duration = duration;
+  const width = Number(await track.getDisplayWidth() || 0);
+  const height = Number(await track.getDisplayHeight() || 0);
+  if (width > 0 && height > 0) {
+    payload.width = width;
+    payload.height = height;
+  }
+  let codec = "";
+  try { codec = await track.getCodecParameterString(); } catch {}
+  if (!codec) {
+    try { codec = await track.getCodec(); } catch {}
+  }
+  if (codec) payload.codec = codec;
+  payload.thumbnailCount = videoThumbnailCount(payload.duration || 0);
+  return payload;
+}
 function ffmpegThumbUrl(fileId, thumbIndex) {
   return `/thumb/${urlId(fileId)}?i=${thumbIndex}`;
 }
@@ -1960,19 +1980,37 @@ async function hydrateThumb(img) {
 function hydrateVideoThumbs(root) {
   Array.from(root.querySelectorAll("img[data-video-thumb='1']")).forEach(hydrateThumb);
 }
+function applyVideoMetadata(file, payload, source) {
+  const normalized = { mediaKind: "video", ...payload };
+  file.videoDuration = Number(normalized.duration || 0);
+  file.thumbnailCount = file.videoDuration ? videoThumbnailCount(file.videoDuration) : Math.max(1, Number(normalized.thumbnailCount || 1));
+  normalized.thumbnailCount = file.thumbnailCount;
+  file.videoMetadata = normalized;
+  file.videoMetadataSource = source;
+  return normalized;
+}
+async function fetchServerMetadata(file) {
+  const response = await fetch(`/meta/${urlId(file.id)}`);
+  if (!response.ok) throw new Error("metadata failed");
+  return response.json();
+}
 async function hydrateVideoFile(file) {
   if (!file || file.mediaKind !== "video" || file.videoMetaLoaded) return file;
   if (!file.videoMetaPromise) {
     file.videoMetaPromise = (async () => {
       try {
-        const response = await fetch(`/meta/${file.id}`);
-        if (!response.ok) throw new Error("metadata failed");
-        const payload = await response.json();
-        file.videoDuration = Number(payload.duration || 0);
-        file.thumbnailCount = file.videoDuration ? videoThumbnailCount(file.videoDuration) : Math.max(1, Number(payload.thumbnailCount || 1));
+        let payload;
+        let source = "mediabunny";
+        try {
+          if (!(await waitForMediabunny())) throw new Error("mediabunny unavailable");
+          payload = await mbVideoMetadata(file);
+        } catch {
+          payload = await fetchServerMetadata(file);
+          source = "server";
+        }
+        applyVideoMetadata(file, payload, source);
       } catch {
-        file.videoDuration = 0;
-        file.thumbnailCount = 1;
+        applyVideoMetadata(file, { thumbnailCount: 1 }, "static");
       } finally {
         file.videoMetaLoaded = true;
         file.videoMetaPromise = null;
@@ -2351,9 +2389,14 @@ async function renderPaneMeta(file) {
   html += `<div id="paneMetaExtra"></div>`;
   area.innerHTML = html;
   try {
-    const response = await fetch(`/meta/${urlId(file.id)}`);
-    if (!response.ok || token !== paneMetaToken) return;
-    const payload = await response.json();
+    let payload;
+    if (file.mediaKind === "video") {
+      await hydrateVideoFile(file);
+      payload = file.videoMetadata || { mediaKind: "video" };
+    } else {
+      payload = await fetchServerMetadata(file);
+    }
+    if (token !== paneMetaToken) return;
     const extra = $("paneMetaExtra");
     if (!extra || token !== paneMetaToken) return;
     let x = "";

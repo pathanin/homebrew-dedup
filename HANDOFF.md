@@ -82,14 +82,26 @@ Ported `get_video_thumbnail_count` / `get_video_thumbnail_timestamp` to JS as
 - The side-pane video thumbnail cycle now uses the same mediabunny-first `hydrateThumb()` path and
   no longer starts from an immediate `/thumb/` `src`.
 
-## NEXT: Phase 4 — metadata via mediabunny
-Move video duration/dimensions/codec collection from `/meta/{id}` to mediabunny where possible:
-`input.computeDuration()`, `track.getDisplayWidth/Height()`, `track.getCodec()`, and
-`track.getCodecParameterString()`. Keep `/meta/{id}` as fallback and for image EXIF/audio.
+## Phase 4 — metadata via mediabunny (DONE this session)
+Moved video duration/dimensions/codec collection from `/meta/{id}` to mediabunny where possible.
+- Added `mbVideoMetadata(file)` using `input.computeDuration()`,
+  `track.getDisplayWidth/Height()`, and `track.getCodecParameterString()` / `track.getCodec()`.
+- Added `applyVideoMetadata()` to cache `videoDuration`, `thumbnailCount`, `videoMetadata`, and
+  `videoMetadataSource` on each video file.
+- `hydrateVideoFile()` is now mediabunny-first and calls `/meta/{id}` only if mediabunny is
+  unavailable or fails.
+- `renderPaneMeta()` uses the cached mediabunny video metadata for video files; image/audio/text
+  metadata still uses `/meta/{id}`.
+- Server `serve_meta()` remains intact as fallback and for image EXIF/audio.
+
+## NEXT: Phase 5 — docs/final verification
+Update docs for the final three-rung video metadata/thumbnail behavior and run the remaining manual
+matrix: mediabunny available, mediabunny unavailable/CDN blocked, ffmpeg unavailable/static fallback,
+and server `/meta` fallback.
 
 ## How to run / verify
 ```bash
-rtk python3 -m unittest -v test_dedup.py   # 98 OK after Phase 3 local tests
+rtk python3 -m unittest -v test_dedup.py   # 99 OK after Phase 4 local tests
 python3 dedup.py testfile/ --dry-run       # manual browser check (testfile/ has no video though)
 ```
 Phase 2 smoke used duplicate H.264 files copied from `/tmp/mb-spike/` into
@@ -100,6 +112,10 @@ Phase 3 smoke used the Webwright contract in `/private/tmp/webwright-phase3/` an
 22-second H.264 files in `/private/tmp/dedup-mb-phase3/`; `final_script_log.txt` shows initial
 frame 0, hover frame 1, and reset frame 0 all using `source: 'mediabunny'` with `blob:` URLs, plus
 `fallback-count: 0`.
+Phase 4 smoke used the Webwright contract in `/private/tmp/webwright-phase4/` against the same
+22-second H.264 duplicate set; `final_script_log.txt` shows both videos with
+`source: 'mediabunny'`, duration `22`, count `4`, dimensions `320 × 240`, codec `avc1.64000c`,
+and no `/meta/` requests before or after side-pane metadata render.
 
 ## Watch out for
 - **`test_popup_port` has 8 PRE-EXISTING failures on `main`** (assert popup-window code in

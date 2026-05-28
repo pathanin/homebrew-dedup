@@ -132,12 +132,22 @@ Webwright contract in `/private/tmp/webwright-phase3/` against duplicate 22-seco
 `/private/tmp/dedup-mb-phase3/`: `final_script_log.txt` shows initial frame 0, hover frame 1, and
 reset frame 0 all with `source: 'mediabunny'` and `blob:` URLs; `fallback-count: 0`.
 
-### Phase 4 — Metadata via mediabunny (reduces ffprobe)
-- In `hydrateVideoFile` (dedup.py:1826): when `mbReady()`, derive duration/width/height/codec from
-  `input.computeDuration()` + `track.getDisplayWidth/Height()` + codec, compute thumbnail count
-  client-side. Call `/meta/{id}` only when mediabunny is unavailable.
-- Keep `serve_meta` (dedup.py:3009) intact — still the fallback, and still the source for image
-  EXIF / audio info (those stay server-side).
+### Phase 4 — Metadata via mediabunny (reduces ffprobe) ✅ DONE (2026-05-29)
+Added `mbVideoMetadata(file)` to derive duration, dimensions, codec, and thumbnail count from
+mediabunny (`input.computeDuration()`, `track.getDisplayWidth/Height()`,
+`track.getCodecParameterString()` / `track.getCodec()`). `hydrateVideoFile()` is now
+mediabunny-first and calls `/meta/{id}` only when mediabunny is unavailable or fails.
+
+Video metadata is normalized and cached on each file via `applyVideoMetadata()` as
+`videoDuration`, `thumbnailCount`, `videoMetadata`, and `videoMetadataSource`. `renderPaneMeta()`
+uses that cached video payload; non-video metadata still uses `/meta/{id}`. `serve_meta()` remains
+unchanged as the fallback and the image EXIF/audio metadata source.
+
+Validated with `rtk python3 -m unittest -v test_dedup.py` (99 OK). Browser verification used the
+Webwright contract in `/private/tmp/webwright-phase4/` against duplicate 22-second H.264 files:
+`final_script_log.txt` shows both videos with `source: 'mediabunny'`, duration `22`, count `4`,
+dimensions `320 × 240`, codec `avc1.64000c`, and no `/meta/` requests before or after side-pane
+metadata render.
 
 ### Phase 5 — Tests + docs
 - Python (`test_dedup.py`): assert `build_browser_html` contains the mediabunny `<script>` when
