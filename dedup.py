@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import stat
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import urllib.parse
 import urllib.request
 import webbrowser
@@ -68,6 +69,7 @@ SMALL_FILE_FULL_HASH_BYTES = 1048576  # 1MB — small files get full hash
 FULL_HASH_CHUNK_BYTES = 1048576
 RANGE_SERVE_CHUNK_BYTES = 65536
 SUBPROCESS_SEMAPHORE = threading.Semaphore(4)
+THUMBNAIL_SUBPROCESS_SEMAPHORE = threading.Semaphore(8)
 DEFAULT_PAGINATION_LIMIT = 500
 MAX_PAGINATION_LIMIT = 2000
 DEFAULT_PROGRESS_EVERY = 5000
@@ -457,6 +459,7 @@ def build_thumbnail_command(path, kind, width=360, height=240, ffmpeg_path="ffmp
     command = [ffmpeg_path, "-v", "error"]
     if kind == "video":
         command.extend(["-ss", f"{max(timestamp, 0):.3f}"])
+        command.extend(["-skip_frame", "nokey"])
     command.extend([
         "-i", path,
         "-frames:v", "1",
@@ -529,7 +532,7 @@ def render_thumbnail(path, width=360, height=240, thumb_index=0):
         timestamp = get_video_thumbnail_timestamp(duration, max(0, min(thumb_index, count - 1)), count)
 
     try:
-        with SUBPROCESS_SEMAPHORE:
+        with THUMBNAIL_SUBPROCESS_SEMAPHORE:
             completed = subprocess.run(
                 build_thumbnail_command(path, kind, width, height, FFMPEG_PATH, timestamp),
                 stdout=subprocess.PIPE,
@@ -596,6 +599,52 @@ def get_thumbnail_threadsafe(path, cache, cache_lock, in_flight, width=360, heig
         with cache_lock:
             in_flight.pop(cache_key, None)
             event.set()
+
+
+def _warm_thumbnails(cache, cache_lock, in_flight, groups):
+    """Pre-generate thumbnails for every video file in background.
+
+    Phase 1 warms frame 0 for all files so the grid paints immediately.
+    Phase 2 warms hover-cycling frames so cycling is instant after the grid loads.
+    Runs in a daemon thread; failures are silently ignored.
+    """
+    video_paths = []
+    for group in groups:
+        for file_info in group["files"]:
+            path = file_info.get("path")
+            if path and get_media_kind(path) == "video":
+                video_paths.append(path)
+
+    if not video_paths:
+        return
+
+    unique_paths = list(dict.fromkeys(video_paths))
+
+    def warm_one(path, thumb_index):
+        get_thumbnail_threadsafe(path, cache, cache_lock, in_flight, 360, 240, thumb_index)
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        # Phase 1: frame 0 for all files — feeds the initial grid paint
+        phase1 = [pool.submit(warm_one, p, 0) for p in unique_paths]
+        for f in as_completed(phase1):
+            try:
+                f.result()
+            except Exception:
+                pass
+
+        # Phase 2: remaining hover frames — so cycling is instant from cache
+        hover_tasks = []
+        for path in unique_paths:
+            duration = get_video_duration(path)
+            count = get_video_thumbnail_count(duration)
+            for i in range(1, count):
+                hover_tasks.append((path, i))
+        phase2 = [pool.submit(warm_one, p, i) for p, i in hover_tasks]
+        for f in as_completed(phase2):
+            try:
+                f.result()
+            except Exception:
+                pass
 
 
 def copy_name_rank(path):
@@ -3320,6 +3369,12 @@ def _run_browser_session(state, handler_factory, url_label, cleanup=None, port=7
 
 def select_files_in_browser(duplicate_groups, require_move_confirmation=False, port=7979):
     state = BrowserSelectionState(duplicate_groups, require_move_confirmation)
+    # Warm thumbnail cache in background so first paint is instant.
+    threading.Thread(
+        target=_warm_thumbnails,
+        args=(state.thumbnail_cache, state.cache_lock, state.thumbnail_inflight, state.groups),
+        daemon=True,
+    ).start()
     def cleanup():
         with state.cache_lock:
             state.thumbnail_cache.clear()
