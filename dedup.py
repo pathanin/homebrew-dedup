@@ -259,11 +259,24 @@ def format_size(size_bytes):
     return f"{size_bytes / 1024**3:.2f} GB"
 
 
+def is_mpeg2_ts(path):
+    # MPEG-2 TS packets are 188 bytes each, always starting with sync byte 0x47.
+    # Two matching sync bytes rules out TypeScript source with very high confidence.
+    try:
+        with open(path, "rb") as f:
+            header = f.read(377)
+        return len(header) >= 189 and header[0] == 0x47 and header[188] == 0x47
+    except OSError:
+        return False
+
+
 def get_media_kind(path):
     extension = os.path.splitext(path or "")[1].lower()
     if extension in IMAGE_EXTENSIONS:
         return "image"
     if extension in VIDEO_EXTENSIONS:
+        return "video"
+    if extension == ".ts" and is_mpeg2_ts(path):
         return "video"
     if extension in AUDIO_EXTENSIONS:
         return "audio"
