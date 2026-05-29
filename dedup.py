@@ -1436,6 +1436,9 @@ const completedThumbPreloads = new Set();
 let thumbPreloadActive = false;
 const mbInputs = new Map();
 const mbThumbCache = new Map();
+const mbThumbInflight = new Map();
+const MAX_MB_INPUTS = 200;
+const MAX_MB_THUMB_CACHE = 500;
 const MIN_VIDEO_HOVER_THUMBNAILS = 4;
 const MAX_VIDEO_HOVER_THUMBNAILS = 12;
 const VIDEO_MULTI_THUMBNAIL_SECONDS = 15;
@@ -1882,6 +1885,14 @@ async function waitForMediabunny(timeoutMs = 2500) {
 async function mbVideoTrack(fileId) {
   if (!mbReady()) throw new Error("mediabunny unavailable");
   if (!mbInputs.has(fileId)) {
+    if (mbInputs.size >= MAX_MB_INPUTS) {
+      const oldest = mbInputs.keys().next().value;
+      if (oldest !== undefined) {
+        const evicted = mbInputs.get(oldest);
+        mbInputs.delete(oldest);
+        if (evicted) evicted.then(({ input }) => { try { input.close?.(); } catch {} }).catch(() => {});
+      }
+    }
     mbInputs.set(fileId, (async () => {
       const { Input, UrlSource, ALL_FORMATS } = window.Mediabunny;
       const input = new Input({ formats: ALL_FORMATS, source: new UrlSource(`/media/${urlId(fileId)}`) });
@@ -1905,15 +1916,37 @@ async function canvasObjectUrl(canvas) {
 }
 async function mbCanvasThumb(fileId, timestamp, w, h, index = 0) {
   const key = `${fileId}:${index}:${timestamp}:${w}x${h}`;
-  if (mbThumbCache.has(key)) return mbThumbCache.get(key);
-  const { track, canDecode } = await mbVideoTrack(fileId);
-  if (!canDecode) throw new Error("codec unavailable");
-  const { CanvasSink } = window.Mediabunny;
-  const sink = new CanvasSink(track, { width: w, height: h, fit: "contain" });
-  const result = await sink.getCanvas(timestamp);
-  const url = await canvasObjectUrl(result.canvas);
-  mbThumbCache.set(key, url);
-  return url;
+  if (mbThumbCache.has(key)) {
+    // Move to end (most recently used) for LRU tracking
+    const url = mbThumbCache.get(key);
+    mbThumbCache.delete(key);
+    mbThumbCache.set(key, url);
+    return url;
+  }
+  if (mbThumbInflight.has(key)) return mbThumbInflight.get(key);
+  const promise = (async () => {
+    const { track, canDecode } = await mbVideoTrack(fileId);
+    if (!canDecode) throw new Error("codec unavailable");
+    const { CanvasSink } = window.Mediabunny;
+    const sink = new CanvasSink(track, { width: w, height: h, fit: "contain" });
+    const result = await sink.getCanvas(timestamp);
+    const url = await canvasObjectUrl(result.canvas);
+    if (mbThumbCache.size >= MAX_MB_THUMB_CACHE) {
+      const oldest = mbThumbCache.keys().next().value;
+      if (oldest !== undefined) {
+        URL.revokeObjectURL(mbThumbCache.get(oldest));
+        mbThumbCache.delete(oldest);
+      }
+    }
+    mbThumbCache.set(key, url);
+    return url;
+  })();
+  mbThumbInflight.set(key, promise);
+  try {
+    return await promise;
+  } finally {
+    mbThumbInflight.delete(key);
+  }
 }
 async function mbVideoMetadata(file) {
   const { input, track } = await mbVideoTrack(file.id);
@@ -2361,7 +2394,7 @@ function renderPanePreview(file) {
     area.innerHTML = `<img src="/thumb/${urlId(file.id)}" onerror="this.onerror=null;this.src='/media/${urlId(file.id)}'" alt="">`;
     maybeSwitchToOriginal(file);
   } else if (file.mediaKind === "video") {
-    area.innerHTML = `<img onerror="fallbackVideoThumb(this)" data-video-thumb="1" data-pane-video-thumb="1" data-file-id="${esc(file.id)}" data-file-name="${esc(file.name)}" data-thumb-index="0" data-thumb-count="1" data-thumb-timestamp="1" alt=""><button class="pane-play-btn" title="Play video">&#9654;</button>`;
+    area.innerHTML = `<img src="/thumb/${urlId(file.id)}?i=0" onerror="fallbackVideoThumb(this)" data-video-thumb="1" data-pane-video-thumb="1" data-file-id="${esc(file.id)}" data-file-name="${esc(file.name)}" data-thumb-index="0" data-thumb-count="1" data-thumb-timestamp="1" alt=""><button class="pane-play-btn" title="Play video">&#9654;</button>`;
     area.querySelector(".pane-play-btn").addEventListener("click", () => startPaneVideo(file));
     startPaneVideoCycle(file);
   } else if (file.mediaKind === "audio") {
@@ -2407,7 +2440,15 @@ async function renderPaneMeta(file) {
     let payload;
     if (file.mediaKind === "video") {
       await hydrateVideoFile(file);
-      payload = file.videoMetadata || { mediaKind: "video" };
+      payload = { ...(file.videoMetadata || { mediaKind: "video" }) };
+      // mediabunny only reads the video track; supplement audio fields from server
+      try {
+        const serverMeta = await fetchServerMetadata(file);
+        if (token !== paneMetaToken) return;
+        for (const k of ["audioCodec", "sampleRate", "channels", "bitrate"]) {
+          if (serverMeta[k] != null) payload[k] = serverMeta[k];
+        }
+      } catch {}
     } else {
       payload = await fetchServerMetadata(file);
     }
@@ -2611,7 +2652,7 @@ async function mountMediabunnyPreviewPlayer(file, token) {
   if (!isPreviewPlayerCurrent(file, token)) throw new Error("stale preview");
   const playerEl = document.createElement("div");
   playerEl.className = "mb-player";
-  playerEl.innerHTML = `<div class="mb-player-canvas-wrap"><canvas></canvas></div><div class="mb-player-controls"><button type="button" data-mb-play>Pause</button><input data-mb-seek type="range" min="0" max="${esc(String(duration || 0))}" step="0.05" value="0"><span class="mb-player-time" data-mb-time>0:00${duration ? " / " + esc(formatDuration(duration)) : ""}</span><input class="mb-player-volume" data-mb-volume type="range" min="0" max="1" step="0.05" value="1" title="Volume"></div>`;
+  playerEl.innerHTML = `<div class="mb-player-canvas-wrap"><canvas></canvas></div><div class="mb-player-controls"><button type="button" data-mb-play>Pause</button><input data-mb-seek type="range" min="0" max="${esc(String(duration || 0))}" step="0.05" value="0"${duration ? "" : " disabled"}><span class="mb-player-time" data-mb-time>0:00${duration ? " / " + esc(formatDuration(duration)) : ""}</span><input class="mb-player-volume" data-mb-volume type="range" min="0" max="1" step="0.05" value="1" title="Volume"></div>`;
   body.innerHTML = "";
   body.appendChild(playerEl);
   const canvas = playerEl.querySelector("canvas");
@@ -2648,6 +2689,7 @@ async function mountMediabunnyPreviewPlayer(file, token) {
     for (const source of scheduledSources.splice(0)) {
       try { source.stop(); } catch {}
     }
+    try { vSink.close?.(); } catch {}
     if (audioContext) audioContext.close().catch(() => {});
   };
   const isCurrent = () => !destroyed && isPreviewPlayerCurrent(file, token);
