@@ -1159,7 +1159,8 @@ function urlId(value) { return encodeURIComponent(String(value)); }
 function authUrl(path) {
   if (!DEDUP_SESSION_TOKEN) return path;
   return path + (path.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(DEDUP_SESSION_TOKEN);
-}\
+}
+function authUrlAttr(path) { return authUrl(path).replace(/&/g, "&amp;"); }\
 """
 
 
@@ -2498,7 +2499,7 @@ function renderPanePreview(file) {
     area.innerHTML = `<img src="${authUrl(`/thumb/${urlId(file.id)}`)}" onerror="this.onerror=null;this.src='${authUrl(`/media/${urlId(file.id)}`)}'" alt="">`;
     maybeSwitchToOriginal(file);
   } else if (file.mediaKind === "video") {
-    area.innerHTML = `<img src="${authUrl(`/thumb/${urlId(file.id)}?i=0`)}" onerror="fallbackVideoThumb(this)" data-video-thumb="1" data-pane-video-thumb="1" data-file-id="${esc(file.id)}" data-file-name="${esc(file.name)}" data-thumb-index="0" data-thumb-count="1" data-thumb-timestamp="1" alt=""><button class="pane-play-btn" title="Play video">&#9654;</button>`;
+    area.innerHTML = `<img src="${authUrlAttr(`/thumb/${urlId(file.id)}?i=0`)}" onerror="fallbackVideoThumb(this)" data-video-thumb="1" data-pane-video-thumb="1" data-file-id="${esc(file.id)}" data-file-name="${esc(file.name)}" data-thumb-index="0" data-thumb-count="1" data-thumb-timestamp="1" alt=""><button class="pane-play-btn" title="Play video">&#9654;</button>`;
     area.querySelector(".pane-play-btn").addEventListener("click", () => startPaneVideo(file));
     startPaneVideoCycle(file);
   } else if (file.mediaKind === "audio") {
@@ -4209,7 +4210,7 @@ class FullHashPreloader:
     """Opportunistically full-hash fast-mode candidates during browser review."""
 
     def __init__(self, groups):
-        self.pending = OrderedDict()
+        self.pending = {}
         for group in groups:
             if group.hash_name == FULL_HASH_NAME:
                 continue
@@ -4271,8 +4272,13 @@ class FullHashPreloader:
         return digest
 
     def _should_abort_path(self, path):
-        with self.condition:
-            return self.stop_all or (self.allowed_paths is not None and path not in self.allowed_paths)
+        # Reads stop_all and allowed_paths without the lock; both flags only
+        # transition one way (False→True, None→set), so a stale read at most
+        # processes one extra chunk before the next iteration catches it.
+        if self.stop_all:
+            return True
+        allowed = self.allowed_paths
+        return allowed is not None and path not in allowed
 
     def start(self):
         if not self.pending or self.thread is not None:
@@ -4284,9 +4290,9 @@ class FullHashPreloader:
         with self.condition:
             allowed = set(paths)
             self.allowed_paths = allowed
-            for path in list(self.pending.keys()):
+            for path in list(self.pending):
                 if path not in allowed:
-                    self.pending.pop(path, None)
+                    del self.pending[path]
             self.condition.notify_all()
 
     def stop(self):
@@ -4298,12 +4304,15 @@ class FullHashPreloader:
             self.thread.join(timeout=2)
 
     def _next_path_locked(self):
-        for path in list(self.pending.keys()):
-            if self.allowed_paths is None or path in self.allowed_paths:
-                self.pending.pop(path, None)
-                self.in_flight.add(path)
-                return path
-        return None
+        # Before restrict_to: allowed_paths is None so any path is eligible.
+        # After restrict_to: pending only contains allowed paths (restrict_to
+        # pruned the rest), so the first entry is always eligible.
+        path = next(iter(self.pending), None)
+        if path is None:
+            return None
+        del self.pending[path]
+        self.in_flight.add(path)
+        return path
 
     def _run(self):
         while True:
@@ -4361,8 +4370,6 @@ def revalidate_file(path, expected_size, expected_mtime_ns, expected_hash, expec
         return False, "not a regular file"
     if file_stat.st_size != expected_size:
         return False, "size changed"
-    if file_stat.st_mtime_ns != expected_mtime_ns:
-        return False, "modified since scan"
     if expected_hash_name == FULL_HASH_NAME:
         current_hash = get_full_content_hash(path)
     else:
@@ -4605,6 +4612,11 @@ def move_to_trash_safely(path, send_to_trash):
         return "send2trash"
     except Exception as send_error:
         if not (CURRENT_OS == OS_MACOS and is_macos_external_volume_path(path)):
+            # Permission errors mean the user can't write to this path at all;
+            # wrapping them as VolumeHasNoTrashError would mislead callers into
+            # offering permanent deletion when the real problem is access rights.
+            if isinstance(send_error, PermissionError):
+                raise
             volume_root = get_volume_root(path)
             raise VolumeHasNoTrashError(
                 path,
