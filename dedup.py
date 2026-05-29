@@ -93,12 +93,12 @@ PHOTOS_LIBRARY_SUFFIXES = (".photoslibrary",)
 FFMPEG_PATH = shutil.which("ffmpeg")
 FFPROBE_PATH = shutil.which("ffprobe")
 EXIFTOOL_PATH = shutil.which("exiftool")
-# Optional browser WebCodecs helper for video thumbnails and metadata. It is
-# disabled by default so a local duplicate-review session never depends on, or
-# leaks file-access timing to, a public CDN. Set DEDUP_MEDIABUNNY_SRC to a local
-# or trusted JS bundle URL to enable it; ffmpeg/ffprobe remain the offline
-# server-side fallback.
-MEDIABUNNY_SRC = os.environ.get("DEDUP_MEDIABUNNY_SRC", "").strip()
+# Browser WebCodecs helper for video thumbnails and metadata. Loading the pinned
+# CDN bundle at runtime keeps this script self-contained and avoids requiring
+# ffmpeg for the common preview path. Set DEDUP_MEDIABUNNY_SRC to override the
+# bundle URL; set it to an empty value to disable Mediabunny.
+DEFAULT_MEDIABUNNY_SRC = "https://unpkg.com/mediabunny@1.45.4/dist/bundles/mediabunny.cjs"
+MEDIABUNNY_SRC = os.environ.get("DEDUP_MEDIABUNNY_SRC", DEFAULT_MEDIABUNNY_SRC).strip()
 
 
 def mediabunny_script_tag(src):
