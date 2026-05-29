@@ -92,6 +92,23 @@ PHOTOS_LIBRARY_SUFFIXES = (".photoslibrary",)
 FFMPEG_PATH = shutil.which("ffmpeg")
 FFPROBE_PATH = shutil.which("ffprobe")
 EXIFTOOL_PATH = shutil.which("exiftool")
+# mediabunny (browser WebCodecs) is the primary engine for video thumbnails and
+# metadata; ffmpeg/ffprobe stay as the server-side fallback. Must be loaded from a
+# URL that serves a JS MIME type — unpkg's .cjs does; jsDelivr's .cjs is served as
+# application/node and the browser refuses it. Empty string => mediabunny disabled
+# (ffmpeg-only). The bundle exposes a global `Mediabunny`.
+MEDIABUNNY_SRC = "https://unpkg.com/mediabunny@1.45.4/dist/bundles/mediabunny.cjs"
+
+
+def mediabunny_script_tag(src):
+    # `defer` so the CDN fetch never blocks page render; availability is checked
+    # lazily in JS (mbReady) when thumbnails hydrate, by which point it has loaded.
+    if not src:
+        return ""
+    return '<script defer src="' + src + '"></script>\n'
+
+
+MEDIABUNNY_SCRIPT_TAG = mediabunny_script_tag(MEDIABUNNY_SRC)
 COPY_PATTERN = re.compile(r"(\bcopy\b|\bduplicate\b|\s\(\d+\)$)", re.IGNORECASE)
 # NAS server-side recycle folders, checked at the volume root.
 # Synology DSM uses #recycle. QNAP uses @Recycle. Samba recycle often uses .recycle.
@@ -1055,7 +1072,9 @@ def build_browser_html():
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Dedup Review</title>
-<style>"""
+"""
++ MEDIABUNNY_SCRIPT_TAG
++ """<style>"""
 + _SHARED_CSS
 + """
 /* ── page-specific ─────────────────────────────────── */
@@ -1144,6 +1163,13 @@ button.danger-action:hover:not(:disabled) { opacity: .85; }
 .preview-body { min-height: 320px; min-width: 0; display: grid; place-items: center; background: var(--surface); border-radius: 8px; overflow: hidden; }
 .preview-body img, .preview-body iframe, .preview-body video { max-width: 100%; width: 100%; max-height: 70vh; border: 0; object-fit: contain; background: var(--panel); }
 .preview-body pre { width: 100%; max-width: 100%; max-height: 70vh; overflow: auto; margin: 0; padding: 12px; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--surface); color: var(--text); }
+.mb-player { width: 100%; max-height: 70vh; display: grid; grid-template-rows: minmax(0, 1fr) auto; align-self: stretch; background: #000; }
+.mb-player-canvas-wrap { min-height: 0; display: grid; place-items: center; overflow: hidden; }
+.mb-player canvas { max-width: 100%; max-height: 100%; width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
+.mb-player-controls { display: grid; grid-template-columns: auto minmax(90px, 1fr) auto 88px; gap: 8px; align-items: center; padding: 8px; background: rgba(0,0,0,.78); color: #fff; font-size: 12px; }
+.mb-player-controls input[type="range"] { min-width: 0; }
+.mb-player-time { min-width: 86px; text-align: center; font-variant-numeric: tabular-nums; }
+.preview-unavailable { padding: 28px; color: var(--muted); text-align: center; font-size: 13px; overflow-wrap: anywhere; word-break: break-word; }
 .dir-picker { position: absolute; right: 10px; top: 40px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.12); z-index: 20; width: min(460px, 90%); max-height: 400px; overflow: auto; }
 .dir-picker-row { border-bottom: 1px solid var(--line); padding: 10px 12px; }
 .dir-picker-row:last-child { border-bottom: 0; }
@@ -1259,6 +1285,9 @@ body.list-view .file-reason { flex: 1; min-width: 60px; font-size: 10px; color: 
   .file { grid-template-rows: 110px 1fr; }
   .thumb { height: 110px; }
   .thumb img { max-height: 110px; }
+  .mb-player { max-height: 50vh; }
+  .mb-player-controls { grid-template-columns: auto minmax(80px, 1fr) auto; }
+  .mb-player-volume { display: none; }
   #previewPane { display: none !important; }
   .header-divider { display: none; }
 }
@@ -1363,6 +1392,10 @@ body.list-view .file-reason { flex: 1; min-width: 60px; font-size: 10px; color: 
   </div>
 </div>
 <script>
+// mediabunny (browser WebCodecs) availability, checked lazily so the deferred CDN
+// script never blocks render. Falsy => fall back to the server ffmpeg thumbnail path.
+function mbReady() { return typeof window.Mediabunny !== "undefined" && window.Mediabunny !== null; }
+let mbReadyPromise = null;
 let allData = {groups: []};
 let requireMoveConfirmation = false;
 let filteredGroups = [];
@@ -1379,6 +1412,7 @@ let trashedOnly = false;
 let isSubmitting = false;
 let previewContext = null;
 let previewRenderToken = 0;
+let previewPlayer = null;
 let activeGroupId = null;
 let activeFileId = null;
 let paneOpen = true;
@@ -1400,6 +1434,14 @@ const thumbPreloadQueue = [];
 const queuedThumbPreloads = new Set();
 const completedThumbPreloads = new Set();
 let thumbPreloadActive = false;
+const mbInputs = new Map();
+const mbThumbCache = new Map();
+const mbThumbInflight = new Map();
+const MAX_MB_INPUTS = 200;
+const MAX_MB_THUMB_CACHE = 500;
+const MIN_VIDEO_HOVER_THUMBNAILS = 4;
+const MAX_VIDEO_HOVER_THUMBNAILS = 12;
+const VIDEO_MULTI_THUMBNAIL_SECONDS = 15;
 const observer = new IntersectionObserver((entries) => {
   entries.forEach(entry => {
     const idx = parseInt(entry.target.dataset.index);
@@ -1823,17 +1865,200 @@ function showDirPicker(group, event) {
 function getGroupVideoThumbs(groupEl) {
   return Array.from(groupEl.querySelectorAll("img[data-video-thumb='1']"));
 }
+async function waitForMediabunny(timeoutMs = 2500) {
+  if (mbReady()) return true;
+  if (!mbReadyPromise) {
+    mbReadyPromise = new Promise((resolve) => {
+      const started = performance.now();
+      const tick = () => {
+        if (mbReady()) resolve(true);
+        else if (performance.now() - started >= timeoutMs) resolve(false);
+        else setTimeout(tick, 50);
+      };
+      tick();
+    });
+  }
+  const ready = await mbReadyPromise;
+  if (!ready) mbReadyPromise = null;
+  return ready || mbReady();
+}
+async function mbVideoTrack(fileId) {
+  if (!mbReady()) throw new Error("mediabunny unavailable");
+  if (!mbInputs.has(fileId)) {
+    if (mbInputs.size >= MAX_MB_INPUTS) {
+      const oldest = mbInputs.keys().next().value;
+      if (oldest !== undefined) {
+        const evicted = mbInputs.get(oldest);
+        mbInputs.delete(oldest);
+        if (evicted) evicted.then(({ input }) => { try { input.close?.(); } catch {} }).catch(() => {});
+      }
+    }
+    mbInputs.set(fileId, (async () => {
+      const { Input, UrlSource, ALL_FORMATS } = window.Mediabunny;
+      const input = new Input({ formats: ALL_FORMATS, source: new UrlSource(`/media/${urlId(fileId)}`) });
+      const track = await input.getPrimaryVideoTrack();
+      if (!track) throw new Error("no video track");
+      const canDecode = await track.canDecode();
+      return { input, track, canDecode };
+    })().catch((err) => {
+      mbInputs.delete(fileId);
+      throw err;
+    }));
+  }
+  return mbInputs.get(fileId);
+}
+async function canvasObjectUrl(canvas) {
+  const blob = canvas.convertToBlob
+    ? await canvas.convertToBlob({ type: "image/jpeg", quality: 0.82 })
+    : await new Promise(resolve => canvas.toBlob(resolve, "image/jpeg", 0.82));
+  if (!blob) throw new Error("thumbnail blob failed");
+  return URL.createObjectURL(blob);
+}
+async function mbCanvasThumb(fileId, timestamp, w, h, index = 0) {
+  const key = `${fileId}:${index}:${timestamp}:${w}x${h}`;
+  if (mbThumbCache.has(key)) {
+    // Move to end (most recently used) for LRU tracking
+    const url = mbThumbCache.get(key);
+    mbThumbCache.delete(key);
+    mbThumbCache.set(key, url);
+    return url;
+  }
+  if (mbThumbInflight.has(key)) return mbThumbInflight.get(key);
+  const promise = (async () => {
+    const { track, canDecode } = await mbVideoTrack(fileId);
+    if (!canDecode) throw new Error("codec unavailable");
+    const { CanvasSink } = window.Mediabunny;
+    const sink = new CanvasSink(track, { width: w, height: h, fit: "contain" });
+    const result = await sink.getCanvas(timestamp);
+    const url = await canvasObjectUrl(result.canvas);
+    if (mbThumbCache.size >= MAX_MB_THUMB_CACHE) {
+      const oldest = mbThumbCache.keys().next().value;
+      if (oldest !== undefined) {
+        URL.revokeObjectURL(mbThumbCache.get(oldest));
+        mbThumbCache.delete(oldest);
+      }
+    }
+    mbThumbCache.set(key, url);
+    return url;
+  })();
+  mbThumbInflight.set(key, promise);
+  try {
+    return await promise;
+  } finally {
+    mbThumbInflight.delete(key);
+  }
+}
+async function mbVideoMetadata(file) {
+  const { input, track } = await mbVideoTrack(file.id);
+  const payload = { mediaKind: "video" };
+  const duration = Number(await input.computeDuration() || 0);
+  if (duration > 0) payload.duration = duration;
+  const width = Number(await track.getDisplayWidth() || 0);
+  const height = Number(await track.getDisplayHeight() || 0);
+  if (width > 0 && height > 0) {
+    payload.width = width;
+    payload.height = height;
+  }
+  let codec = "";
+  try { codec = await track.getCodecParameterString(); } catch {}
+  if (!codec) {
+    try { codec = await track.getCodec(); } catch {}
+  }
+  if (codec) payload.codec = codec;
+  payload.thumbnailCount = videoThumbnailCount(payload.duration || 0);
+  return payload;
+}
+function ffmpegThumbUrl(fileId, thumbIndex) {
+  return `/thumb/${urlId(fileId)}?i=${thumbIndex}`;
+}
+function videoThumbnailCount(duration) {
+  duration = Number(duration || 0);
+  if (!duration || duration <= VIDEO_MULTI_THUMBNAIL_SECONDS) return 1;
+  return Math.min(MAX_VIDEO_HOVER_THUMBNAILS, Math.max(MIN_VIDEO_HOVER_THUMBNAILS, Math.ceil(duration / 60)));
+}
+function videoThumbnailTimestamp(duration, index, count) {
+  duration = Number(duration || 0);
+  index = Math.max(0, Number(index || 0));
+  count = Math.max(1, Number(count || 1));
+  if (!duration) return 1;
+  if (count <= 1) return Math.min(Math.max(duration * 0.1, 1), Math.max(duration - 0.5, 0));
+  const safeDuration = Math.max(duration - 1, 1);
+  const position = (index + 1) / (count + 1);
+  return Math.min(Math.max(safeDuration * position, 1), Math.max(duration - 0.5, 0));
+}
+function videoThumbDimensions(img) {
+  const rect = img.getBoundingClientRect();
+  return {
+    width: Math.max(160, Math.round(rect.width || img.clientWidth || img.width || 240)),
+    height: Math.max(90, Math.round(rect.height || img.clientHeight || img.height || 140)),
+  };
+}
+function setVideoThumbTimestamp(img, thumbIndex) {
+  const count = Math.max(1, Number(img.dataset.thumbCount || "1"));
+  const duration = Number(img.dataset.thumbDuration || "0");
+  img.dataset.thumbTimestamp = String(videoThumbnailTimestamp(duration, thumbIndex, count));
+}
+async function hydrateThumb(img) {
+  if (!img || img.dataset.thumbLoaded === "1") return;
+  img.dataset.thumbLoaded = "1";
+  const fileId = img.dataset.fileId;
+  const thumbIndex = Math.max(0, Number(img.dataset.thumbIndex || "0"));
+  const expectedIndex = String(thumbIndex);
+  const fallbackSrc = ffmpegThumbUrl(fileId, thumbIndex);
+  try {
+    if (!fileId || !(await waitForMediabunny())) throw new Error("mediabunny unavailable");
+    const { width, height } = videoThumbDimensions(img);
+    const timestamp = Math.max(0, Number(img.dataset.thumbTimestamp || "1"));
+    const src = await mbCanvasThumb(fileId, timestamp, width, height, thumbIndex);
+    if (img.isConnected && img.dataset.thumbIndex === expectedIndex) {
+      img.dataset.thumbSource = "mediabunny";
+      img.src = src;
+    }
+  } catch {
+    if (img.isConnected && img.dataset.thumbIndex === expectedIndex) {
+      img.dataset.thumbSource = "ffmpeg";
+      img.src = fallbackSrc;
+    }
+  }
+}
+function hydrateVideoThumbs(root) {
+  Array.from(root.querySelectorAll("img[data-video-thumb='1']")).forEach(hydrateThumb);
+}
+function applyVideoMetadata(file, payload, source) {
+  const normalized = { mediaKind: "video", ...payload };
+  file.videoDuration = Number(normalized.duration || 0);
+  file.thumbnailCount = file.videoDuration ? videoThumbnailCount(file.videoDuration) : Math.max(1, Number(normalized.thumbnailCount || 1));
+  normalized.thumbnailCount = file.thumbnailCount;
+  file.videoMetadata = normalized;
+  file.videoMetadataSource = source;
+  return normalized;
+}
+async function fetchServerMetadata(file) {
+  const response = await fetch(`/meta/${urlId(file.id)}`);
+  if (!response.ok) throw new Error("metadata failed");
+  return response.json();
+}
+function stopPreviewPlayer() {
+  if (previewPlayer && typeof previewPlayer.destroy === "function") previewPlayer.destroy();
+  previewPlayer = null;
+}
 async function hydrateVideoFile(file) {
   if (!file || file.mediaKind !== "video" || file.videoMetaLoaded) return file;
   if (!file.videoMetaPromise) {
     file.videoMetaPromise = (async () => {
       try {
-        const response = await fetch(`/meta/${file.id}`);
-        if (!response.ok) throw new Error("metadata failed");
-        const payload = await response.json();
-        file.thumbnailCount = Math.max(1, Number(payload.thumbnailCount || 1));
+        let payload;
+        let source = "mediabunny";
+        try {
+          if (!(await waitForMediabunny())) throw new Error("mediabunny unavailable");
+          payload = await mbVideoMetadata(file);
+        } catch {
+          payload = await fetchServerMetadata(file);
+          source = "server";
+        }
+        applyVideoMetadata(file, payload, source);
       } catch {
-        file.thumbnailCount = 1;
+        applyVideoMetadata(file, { thumbnailCount: 1 }, "static");
       } finally {
         file.videoMetaLoaded = true;
         file.videoMetaPromise = null;
@@ -1849,7 +2074,10 @@ async function hydrateVideoMetadata(root) {
     const file = findFile(node.dataset.fileId);
     await hydrateVideoFile(file);
     const count = Math.max(1, Number(file && file.thumbnailCount || 1));
+    const duration = Number(file && file.videoDuration || 0);
     node.dataset.thumbCount = String(count);
+    node.dataset.thumbDuration = String(duration);
+    setVideoThumbTimestamp(node, Math.max(0, Number(node.dataset.thumbIndex || "0")));
     node.dataset.metaLoaded = "1";
   }));
 }
@@ -1857,33 +2085,47 @@ function queueVideoThumbPreload(img, thumbIndex) {
   const count = Math.max(1, Number(img.dataset.thumbCount || "1"));
   if (count <= 1) return;
   const normalizedIndex = thumbIndex % count;
-  const key = `${img.dataset.fileId}:${normalizedIndex}`;
+  const { width, height } = videoThumbDimensions(img);
+  const timestamp = videoThumbnailTimestamp(Number(img.dataset.thumbDuration || "0"), normalizedIndex, count);
+  const key = `${img.dataset.fileId}:${normalizedIndex}:${timestamp}:${width}x${height}`;
   if (queuedThumbPreloads.has(key) || completedThumbPreloads.has(key)) return;
   queuedThumbPreloads.add(key);
   thumbPreloadQueue.push({
     key,
     fileId: img.dataset.fileId,
     thumbIndex: normalizedIndex,
+    timestamp,
+    width,
+    height,
     order: Number(img.dataset.videoOrder || "0"),
   });
   thumbPreloadQueue.sort((a, b) => a.order - b.order || a.thumbIndex - b.thumbIndex || a.fileId.localeCompare(b.fileId));
   processVideoThumbPreloadQueue();
 }
-function processVideoThumbPreloadQueue() {
+function preloadFfmpegThumb(fileId, thumbIndex) {
+  return new Promise((resolve) => {
+    const preload = new Image();
+    preload.onload = resolve;
+    preload.onerror = resolve;
+    preload.src = ffmpegThumbUrl(fileId, thumbIndex);
+  });
+}
+async function processVideoThumbPreloadQueue() {
   if (thumbPreloadActive) return;
   const item = thumbPreloadQueue.shift();
   if (!item) return;
   thumbPreloadActive = true;
-  const preload = new Image();
-  const finish = () => {
+  try {
+    if (mbReady()) await mbCanvasThumb(item.fileId, item.timestamp, item.width, item.height, item.thumbIndex);
+    else await preloadFfmpegThumb(item.fileId, item.thumbIndex);
+  } catch {
+    await preloadFfmpegThumb(item.fileId, item.thumbIndex);
+  } finally {
     queuedThumbPreloads.delete(item.key);
     completedThumbPreloads.add(item.key);
     thumbPreloadActive = false;
     processVideoThumbPreloadQueue();
-  };
-  preload.onload = finish;
-  preload.onerror = finish;
-  preload.src = `/thumb/${urlId(item.fileId)}?i=${item.thumbIndex}`;
+  }
 }
 function preloadGroupVideoThumbs(thumbs, index) {
   thumbs
@@ -1905,7 +2147,9 @@ function startGroupVideoThumbCycle(groupEl) {
       const count = Math.max(1, Number(img.dataset.thumbCount || "1"));
       const thumbIndex = index % count;
       img.dataset.thumbIndex = String(thumbIndex);
-      img.src = `/thumb/${urlId(img.dataset.fileId)}?i=${thumbIndex}`;
+      setVideoThumbTimestamp(img, thumbIndex);
+      delete img.dataset.thumbLoaded;
+      hydrateThumb(img);
     });
     preloadGroupVideoThumbs(thumbs, index + 1);
     preloadGroupVideoThumbs(thumbs, index + 2);
@@ -1921,8 +2165,10 @@ function stopGroupVideoThumbCycle(groupEl) {
   groupEl.dataset.thumbIndex = "0";
   getGroupVideoThumbs(groupEl).forEach((img) => {
     img.dataset.thumbIndex = "0";
+    setVideoThumbTimestamp(img, 0);
     delete img.dataset.prefetched;
-    img.src = `/thumb/${urlId(img.dataset.fileId)}?i=0`;
+    delete img.dataset.thumbLoaded;
+    hydrateThumb(img);
   });
 }
 function fallbackVideoThumb(img) {
@@ -2063,6 +2309,14 @@ async function startPaneVideoCycle(file) {
   await hydrateVideoFile(file);
   if (token !== paneVideoToken) return;
   const count = Math.max(1, Number(file.thumbnailCount || 1));
+  const area = $("panePreviewArea");
+  const img = area ? area.querySelector("img[data-pane-video-thumb='1']") : null;
+  if (!img || !img.isConnected || img.dataset.fileId !== file.id) return;
+  img.dataset.thumbCount = String(count);
+  img.dataset.thumbDuration = String(Number(file.videoDuration || 0));
+  setVideoThumbTimestamp(img, 0);
+  delete img.dataset.thumbLoaded;
+  hydrateThumb(img);
   if (count <= 1) return;
   let index = 0;
   const tick = () => {
@@ -2075,7 +2329,9 @@ async function startPaneVideoCycle(file) {
     }
     index = (index + 1) % count;
     img.dataset.thumbIndex = String(index);
-    img.src = `/thumb/${urlId(file.id)}?i=${index}`;
+    setVideoThumbTimestamp(img, index);
+    delete img.dataset.thumbLoaded;
+    hydrateThumb(img);
   };
   paneVideoTimer = setInterval(tick, 650);
 }
@@ -2138,7 +2394,7 @@ function renderPanePreview(file) {
     area.innerHTML = `<img src="/thumb/${urlId(file.id)}" onerror="this.onerror=null;this.src='/media/${urlId(file.id)}'" alt="">`;
     maybeSwitchToOriginal(file);
   } else if (file.mediaKind === "video") {
-    area.innerHTML = `<img src="/thumb/${urlId(file.id)}?i=0" data-pane-video-thumb="1" data-file-id="${esc(file.id)}" data-thumb-index="0" alt=""><button class="pane-play-btn" title="Play video">&#9654;</button>`;
+    area.innerHTML = `<img src="/thumb/${urlId(file.id)}?i=0" onerror="fallbackVideoThumb(this)" data-video-thumb="1" data-pane-video-thumb="1" data-file-id="${esc(file.id)}" data-file-name="${esc(file.name)}" data-thumb-index="0" data-thumb-count="1" data-thumb-timestamp="1" alt=""><button class="pane-play-btn" title="Play video">&#9654;</button>`;
     area.querySelector(".pane-play-btn").addEventListener("click", () => startPaneVideo(file));
     startPaneVideoCycle(file);
   } else if (file.mediaKind === "audio") {
@@ -2181,9 +2437,22 @@ async function renderPaneMeta(file) {
   html += `<div id="paneMetaExtra"></div>`;
   area.innerHTML = html;
   try {
-    const response = await fetch(`/meta/${urlId(file.id)}`);
-    if (!response.ok || token !== paneMetaToken) return;
-    const payload = await response.json();
+    let payload;
+    if (file.mediaKind === "video") {
+      await hydrateVideoFile(file);
+      payload = { ...(file.videoMetadata || { mediaKind: "video" }) };
+      // mediabunny only reads the video track; supplement audio fields from server
+      try {
+        const serverMeta = await fetchServerMetadata(file);
+        if (token !== paneMetaToken) return;
+        for (const k of ["audioCodec", "sampleRate", "channels", "bitrate"]) {
+          if (serverMeta[k] != null) payload[k] = serverMeta[k];
+        }
+      } catch {}
+    } else {
+      payload = await fetchServerMetadata(file);
+    }
+    if (token !== paneMetaToken) return;
     const extra = $("paneMetaExtra");
     if (!extra || token !== paneMetaToken) return;
     let x = "";
@@ -2223,7 +2492,7 @@ function mediaHtml(file) {
   if (file.mediaKind === "image") return `<img loading="lazy" src="/thumb/${urlId(file.id)}" onerror="this.onerror=null;this.src='/media/${urlId(file.id)}'" alt="">`;
   if (file.mediaKind === "video") {
     const count = Math.max(1, Number(file.thumbnailCount || 1));
-    return `<img loading="lazy" src="/thumb/${urlId(file.id)}?i=0" onerror="fallbackVideoThumb(this)" data-video-thumb="1" data-file-id="${esc(file.id)}" data-file-name="${esc(file.name)}" data-video-order="${file.defaultSortIndex || 0}" data-thumb-index="0" data-thumb-count="${count}" alt="">`;
+    return `<img loading="lazy" onerror="fallbackVideoThumb(this)" data-video-thumb="1" data-file-id="${esc(file.id)}" data-file-name="${esc(file.name)}" data-video-order="${file.defaultSortIndex || 0}" data-thumb-index="0" data-thumb-count="${count}" data-thumb-timestamp="1" alt="">`;
   }
   if (file.previewKind === "pdf") return `<iframe loading="lazy" src="/pdf/${urlId(file.id)}#page=1&toolbar=0&navpanes=0" title="PDF preview for ${esc(file.name)}"></iframe>`;
   if (file.previewKind === "text") return `<pre class="text-preview" data-text-id="${esc(file.id)}">Loading...</pre>`;
@@ -2231,10 +2500,13 @@ function mediaHtml(file) {
 }
 function previewHtml(file) {
   if (file.mediaKind === "image") return `<img src="/media/${urlId(file.id)}" alt="">`;
-  if (file.mediaKind === "video") return `<video controls autoplay muted src="/media/${urlId(file.id)}"></video>`;
+  if (file.mediaKind === "video") return `<video controls autoplay muted playsinline src="/media/${urlId(file.id)}"></video>`;
   if (file.previewKind === "pdf") return `<div style="padding:32px;text-align:center;color:var(--muted);font-size:13px;display:flex;flex-direction:column;align-items:center;gap:12px"><p style="margin:0">PDF preview available in the side panel.</p><a href="/pdf/${urlId(file.id)}" target="_blank" style="color:var(--text);font-weight:600">↗ Open PDF in new tab</a></div>`;
   if (file.previewKind === "text") return `<pre data-preview-text="${esc(file.id)}">Loading...</pre>`;
   return `<p>${esc(file.name)}</p>`;
+}
+function previewUnavailableHtml(file) {
+  return `<div class="preview-unavailable">${esc(file && file.name ? file.name : "Video preview unavailable")}<br>Video preview unavailable</div>`;
 }
 function updatePreviewDecision(fileId) {
   const isTrash = trash.has(fileId);
@@ -2303,11 +2575,281 @@ function navigateMainView(dir) {
     if (groupEl) groupEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }
 }
+function nativeVideoCannotPlay(video, token, file) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (failed) => {
+      if (done) return;
+      done = true;
+      cleanup();
+      resolve(Boolean(failed));
+    };
+    const stillCurrent = () => previewContext && previewContext.fileId === file.id && token === previewRenderToken && video.isConnected;
+    const onError = () => finish(true);
+    const onPlayable = () => finish(false);
+    const checkFrozenVideo = () => {
+      if (!stillCurrent()) return finish(false);
+      if (video.error) return finish(true);
+      if (video.currentTime > 0.2 && video.videoWidth === 0) return finish(true);
+    };
+    const stallTimer = setTimeout(() => {
+      if (!stillCurrent()) return finish(false);
+      finish(video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || Boolean(video.error));
+    }, 2800);
+    const frozenTimer = setInterval(checkFrozenVideo, 450);
+    const cleanup = () => {
+      clearTimeout(stallTimer);
+      clearInterval(frozenTimer);
+      video.removeEventListener("error", onError);
+      video.removeEventListener("loadeddata", onPlayable);
+      video.removeEventListener("canplay", onPlayable);
+      video.removeEventListener("playing", onPlayable);
+    };
+    video.addEventListener("error", onError, { once: true });
+    video.addEventListener("loadeddata", onPlayable, { once: true });
+    video.addEventListener("canplay", onPlayable, { once: true });
+    video.addEventListener("playing", onPlayable, { once: true });
+  });
+}
+async function hydratePreviewVideo(file, token) {
+  const body = $("previewBody");
+  const video = body ? body.querySelector("video") : null;
+  if (!video) return;
+  const failed = await nativeVideoCannotPlay(video, token, file);
+  if (!failed || !previewContext || previewContext.fileId !== file.id || token !== previewRenderToken) return;
+  video.pause();
+  video.src = "";
+  try {
+    if (!(await waitForMediabunny())) throw new Error("mediabunny unavailable");
+    if (!previewContext || previewContext.fileId !== file.id || token !== previewRenderToken) return;
+    previewPlayer = await mountMediabunnyPreviewPlayer(file, token);
+  } catch {
+    if (!previewContext || previewContext.fileId !== file.id || token !== previewRenderToken) return;
+    stopPreviewPlayer();
+    $("previewBody").innerHTML = previewUnavailableHtml(file);
+  }
+}
+function isPreviewPlayerCurrent(file, token) {
+  return previewContext && previewContext.fileId === file.id && token === previewRenderToken;
+}
+async function mountMediabunnyPreviewPlayer(file, token) {
+  stopPreviewPlayer();
+  const body = $("previewBody");
+  if (!body || !isPreviewPlayerCurrent(file, token)) throw new Error("stale preview");
+  const { input, track: videoTrack, canDecode } = await mbVideoTrack(file.id);
+  if (!isPreviewPlayerCurrent(file, token)) throw new Error("stale preview");
+  if (!canDecode) throw new Error("codec unavailable");
+  const { CanvasSink, AudioBufferSink } = window.Mediabunny;
+  const duration = Number(file.videoDuration || await input.computeDuration() || 0);
+  const displayWidth = Math.max(320, Number(await videoTrack.getDisplayWidth() || 640));
+  const displayHeight = Math.max(180, Number(await videoTrack.getDisplayHeight() || 360));
+  let audioTrack = null;
+  let audioSink = null;
+  try {
+    audioTrack = await input.getPrimaryAudioTrack();
+    if (audioTrack && await audioTrack.canDecode()) audioSink = new AudioBufferSink(audioTrack);
+  } catch {}
+  if (!isPreviewPlayerCurrent(file, token)) throw new Error("stale preview");
+  const playerEl = document.createElement("div");
+  playerEl.className = "mb-player";
+  playerEl.innerHTML = `<div class="mb-player-canvas-wrap"><canvas></canvas></div><div class="mb-player-controls"><button type="button" data-mb-play>Pause</button><input data-mb-seek type="range" min="0" max="${esc(String(duration || 0))}" step="0.05" value="0"${duration ? "" : " disabled"}><span class="mb-player-time" data-mb-time>0:00${duration ? " / " + esc(formatDuration(duration)) : ""}</span><input class="mb-player-volume" data-mb-volume type="range" min="0" max="1" step="0.05" value="1" title="Volume"></div>`;
+  body.innerHTML = "";
+  body.appendChild(playerEl);
+  const canvas = playerEl.querySelector("canvas");
+  const ctx = canvas.getContext("2d");
+  canvas.width = displayWidth;
+  canvas.height = displayHeight;
+  const playButton = playerEl.querySelector("[data-mb-play]");
+  const seekInput = playerEl.querySelector("[data-mb-seek]");
+  const timeNode = playerEl.querySelector("[data-mb-time]");
+  const volumeInput = playerEl.querySelector("[data-mb-volume]");
+  const vSink = new CanvasSink(videoTrack, { width: displayWidth, height: displayHeight, fit: "contain", poolSize: 3 });
+  const audioContext = audioSink ? new (window.AudioContext || window.webkitAudioContext)() : null;
+  const gainNode = audioContext ? audioContext.createGain() : null;
+  if (gainNode) gainNode.connect(audioContext.destination);
+  let destroyed = false;
+  let playing = true;
+  let startT = 0;
+  let baseAudioTime = audioContext ? audioContext.currentTime : 0;
+  let baseWallTime = performance.now();
+  let frameIterator = null;
+  let audioIterator = null;
+  let latestFrame = null;
+  let pendingFrame = null;
+  let pendingAudio = null;
+  let rafId = 0;
+  let frameLoopId = 0;
+  let audioLoopId = 0;
+  const scheduledSources = [];
+  const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+  const destroy = () => {
+    if (destroyed) return;
+    destroyed = true;
+    if (rafId) cancelAnimationFrame(rafId);
+    for (const source of scheduledSources.splice(0)) {
+      try { source.stop(); } catch {}
+    }
+    try { vSink.close?.(); } catch {}
+    if (audioContext) audioContext.close().catch(() => {});
+  };
+  const isCurrent = () => !destroyed && isPreviewPlayerCurrent(file, token);
+  const mediaTime = () => {
+    if (!playing) return startT;
+    const elapsed = audioContext ? audioContext.currentTime - baseAudioTime : (performance.now() - baseWallTime) / 1000;
+    return Math.min(duration || Infinity, Math.max(0, startT + elapsed));
+  };
+  const drawFrame = (wrapped) => {
+    if (!wrapped || !ctx) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(wrapped.canvas, 0, 0, canvas.width, canvas.height);
+  };
+  const resetLoops = async (seekT = 0) => {
+    for (const source of scheduledSources.splice(0)) {
+      try { source.stop(); } catch {}
+    }
+    startT = Math.max(0, Math.min(Number(seekT || 0), duration || Number.MAX_SAFE_INTEGER));
+    baseAudioTime = audioContext ? audioContext.currentTime : 0;
+    baseWallTime = performance.now();
+    frameIterator = vSink.canvases(startT);
+    audioIterator = audioSink ? audioSink.buffers(startT) : null;
+    pendingFrame = null;
+    pendingAudio = null;
+    const poster = await vSink.getCanvas(startT);
+    if (!isCurrent()) return;
+    latestFrame = poster;
+    drawFrame(poster);
+  };
+  const runFrameLoop = async () => {
+    const loopId = ++frameLoopId;
+    while (isCurrent() && loopId === frameLoopId) {
+      if (!pendingFrame) {
+        const next = await frameIterator.next();
+        if (!isCurrent() || loopId !== frameLoopId || next.done) return;
+        pendingFrame = next.value;
+      }
+      if (pendingFrame.timestamp <= mediaTime() + 0.1) {
+        latestFrame = pendingFrame;
+        pendingFrame = null;
+      } else {
+        await sleep(80);
+      }
+    }
+  };
+  const scheduleAudio = async () => {
+    if (!audioSink || !audioContext || !gainNode) return;
+    const loopId = ++audioLoopId;
+    while (isCurrent() && loopId === audioLoopId) {
+      if (!playing || audioContext.state === "suspended") {
+        await new Promise(resolve => setTimeout(resolve, 120));
+        continue;
+      }
+      if (!pendingAudio) {
+        const next = await audioIterator.next();
+        if (!isCurrent() || loopId !== audioLoopId || next.done) return;
+        pendingAudio = next.value;
+      }
+      const { buffer, timestamp, duration: bufferDuration } = pendingAudio;
+      const when = baseAudioTime + Math.max(0, timestamp - startT);
+      const ahead = baseAudioTime + (mediaTime() - startT) + 4.5;
+      if (when > ahead) {
+        await sleep(120);
+        continue;
+      }
+      const source = audioContext.createBufferSource();
+      source.buffer = buffer;
+      source.connect(gainNode);
+      source.onended = () => {
+        const idx = scheduledSources.indexOf(source);
+        if (idx >= 0) scheduledSources.splice(idx, 1);
+      };
+      scheduledSources.push(source);
+      source.start(Math.max(audioContext.currentTime, when));
+      pendingAudio = null;
+      if (bufferDuration > 0.5) await sleep(80);
+    }
+  };
+  const renderLoop = () => {
+    if (!isCurrent()) {
+      destroy();
+      return;
+    }
+    const t = mediaTime();
+    if (latestFrame && latestFrame.timestamp <= t + 0.03) drawFrame(latestFrame);
+    seekInput.value = String(Math.min(Number(seekInput.max || "0") || t, t));
+    timeNode.textContent = `${formatDuration(t)}${duration ? " / " + formatDuration(duration) : ""}`;
+    if (duration && t >= duration) {
+      playing = false;
+      playButton.textContent = "Play";
+      return;
+    }
+    rafId = requestAnimationFrame(renderLoop);
+  };
+  const seek = async (value) => {
+    frameLoopId++;
+    audioLoopId++;
+    await resetLoops(value);
+    if (!isCurrent()) return;
+    runFrameLoop();
+    scheduleAudio();
+  };
+  playButton.addEventListener("click", async () => {
+    if (!isCurrent()) return;
+    const pausedAt = mediaTime();
+    playing = !playing;
+    playButton.textContent = playing ? "Pause" : "Play";
+    if (audioContext) {
+      if (playing) {
+        frameLoopId++;
+        audioLoopId++;
+        await resetLoops(startT);
+        if (!isCurrent()) return;
+        await audioContext.resume();
+        runFrameLoop();
+        scheduleAudio();
+      } else {
+        startT = pausedAt;
+        for (const source of scheduledSources.splice(0)) {
+          try { source.stop(); } catch {}
+        }
+        await audioContext.suspend();
+      }
+    } else if (playing) {
+      frameLoopId++;
+      await resetLoops(startT);
+      if (!isCurrent()) return;
+      runFrameLoop();
+      baseWallTime = performance.now();
+      rafId = requestAnimationFrame(renderLoop);
+    } else {
+      startT = pausedAt;
+    }
+  });
+  seekInput.addEventListener("input", () => {
+    playing = false;
+    playButton.textContent = "Play";
+    seek(Number(seekInput.value));
+  });
+  if (volumeInput && gainNode) volumeInput.addEventListener("input", () => { gainNode.gain.value = Number(volumeInput.value || 1); });
+  const player = { destroy };
+  await resetLoops(0);
+  if (!isCurrent()) {
+    destroy();
+    throw new Error("stale preview");
+  }
+  if (audioContext && audioContext.state === "suspended") {
+    await audioContext.resume().catch(() => {});
+  }
+  runFrameLoop();
+  scheduleAudio();
+  rafId = requestAnimationFrame(renderLoop);
+  return player;
+}
 function renderPreview(fileId) {
   if (!previewContext) return;
   const file = findFile(fileId);
   if (!file) return;
   const token = ++previewRenderToken;
+  stopPreviewPlayer();
   const oldVideo = $("previewBody").querySelector("video");
   if (oldVideo) { oldVideo.pause(); oldVideo.src = ""; }
   previewContext.fileId = fileId;
@@ -2319,6 +2861,9 @@ function renderPreview(fileId) {
   const textNode = $("previewBody").querySelector("[data-preview-text]");
   if (textNode) {
     hydratePreviewText(file.id, token, textNode);
+  }
+  if (file.mediaKind === "video") {
+    hydratePreviewVideo(file, token);
   }
 }
 async function hydratePreviewText(fileId, token, textNode) {
@@ -2347,6 +2892,7 @@ function openPreview(fileId, groupId, event) {
 }
 function closePreview(restoreFocus = true) {
   previewRenderToken++;
+  stopPreviewPlayer();
   const video = $("previewBody").querySelector("video");
   if (video) { video.pause(); video.src = ""; }
   $("previewOverlay").classList.remove("is-open");
@@ -2416,6 +2962,7 @@ function renderGroupContent(el, group) {
     delete el.dataset.hovering;
     stopGroupVideoThumbCycle(el);
   };
+  hydrateVideoThumbs(el);
   hydrateVideoMetadata(el);
   hydrateTextPreviews(el);
   refreshActiveGroupHighlight();
@@ -4002,7 +4549,7 @@ def parse_args(argv):
         "--port",
         type=int,
         default=7979,
-        help="Port for the local browser UI (default: 7979). A fixed port lets browsers remember popup permissions.",
+        help="Port for the local browser UI (default: 7979). A fixed port lets the browser remember site permissions across runs.",
     )
     return parser.parse_args(argv)
 
