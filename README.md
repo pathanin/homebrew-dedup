@@ -7,7 +7,9 @@ It is built for large, messy folders where you want fast duplicate detection, vi
 ## Highlights
 
 - Fast default scan: full hashing for small files and sampled hashing for large files
-- Optional exact verification with `--full-verify`
+- Exact destructive safety: sampled large-file matches are full-hashed before anything is moved
+- Background full hashing starts while you review, then narrows to the files you selected and their kept peers
+- Optional exact scan-time verification with `--full-verify`
 - Local browser review UI with filters, sortable list and grid views, and a resizable side preview pane
 - Decision summary bar shows groups, files, marked count, and reclaimable bytes at a glance
 - Per-group marked count and reclaimable size alongside the group actions
@@ -45,6 +47,8 @@ brew install exiftool      # image EXIF such as camera, lens, aperture, and GPS
 
 `ffmpeg` also provides `ffprobe`, which `dedup` uses for media metadata.
 
+Browser-side video decoding loads Mediabunny from a pinned CDN URL at runtime by default, keeping `dedup` single-file and reducing dependence on `ffmpeg` for previews. Advanced users can set `DEDUP_MEDIABUNNY_SRC` to a different bundle URL, or to an empty value to disable Mediabunny and rely on the server-side fallback.
+
 ## Usage
 
 Scan a folder and open the local review UI:
@@ -79,7 +83,7 @@ dedup /path/to/folder --port 7979
 
 ## Browser UI
 
-The review UI opens automatically at `http://localhost:7979`.
+The review UI opens automatically at a local `http://127.0.0.1:7979` URL with a per-session token.
 
 **Header** — search, type filter, sort order, trashed-only toggle, list/grid toggle, preview pane toggle, and undo.
 
@@ -112,8 +116,8 @@ The review UI opens automatically at `http://localhost:7979`.
 --allow-home-root           Allow scanning your home directory root.
 --allow-photo-library       Allow scanning inside macOS .photoslibrary packages.
 -e, --clean-empty-dirs      Review and trash empty directories after file cleanup.
---allow-slow-local-trash    Allow last-resort copies to local ~/.Trash from NAS volumes.
---permanent-on-no-trash     Permanently delete when a volume has no recoverable trash.
+--allow-slow-local-trash    Allow last-resort copies to local ~/.Trash.
+--permanent-on-no-trash     Permanently delete when no recoverable trash route works.
 --port PORT                 Port for the local browser UI.
 ```
 
@@ -123,15 +127,15 @@ Run `dedup --help` for the full option list.
 
 `dedup` does not permanently delete by default. Selected files are moved to Trash or to an existing same-volume recycle folder where supported.
 
-Before destructive actions, `dedup` revalidates selected files against the scanned duplicate groups and aborts if a selected path has been replaced by a symlink. Empty-folder cleanup also rechecks that folders are still empty before removal.
+Before destructive actions, `dedup` revalidates selected files against the scanned duplicate groups, checks that size and modified time still match, and fully hashes sampled large-file matches against a kept peer. Background full hashing starts during browser review to reduce the final wait, and pending work outside the submitted selection is abandoned after you click Move. Empty-folder cleanup also rechecks that folders are still empty before removal.
 
 Risky scan roots are guarded. Filesystem roots are refused, home-directory root scans require `--allow-home-root`, and macOS Photos libraries require `--allow-photo-library`.
 
-On macOS external or NAS volumes, `dedup` tries recoverable paths first:
+When trashing fails, `dedup` tries recoverable paths first:
 
 1. `send2trash`
-2. `/usr/bin/trash`
-3. Existing NAS recycle folders such as `#recycle`, `@Recycle`, or `.recycle`
+2. `/usr/bin/trash` on macOS external volumes
+3. Existing same-volume NAS recycle folders such as `#recycle`, `@Recycle`, or `.recycle`
 
 If no recoverable trash path exists, `dedup` skips the file in non-interactive mode. Interactive runs ask what to do. Use `--allow-slow-local-trash` to allow copying into local `~/.Trash`; use `--permanent-on-no-trash` only when irreversible deletion is acceptable.
 
