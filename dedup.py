@@ -3162,7 +3162,6 @@ def make_browser_handler(state):
                     limit = DEFAULT_PAGINATION_LIMIT
 
                 if offset == 0 and limit >= len(state.groups) and not query.get("offset") and not query.get("limit"):
-                    # No pagination params — return cached full response
                     self.send_bytes(200, state._groups_json, "application/json")
                 else:
                     sliced = state.groups[offset:offset + limit]
