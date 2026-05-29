@@ -8,6 +8,7 @@ import errno
 import glob
 import json
 import hashlib
+import html
 import mimetypes
 import os
 import re
@@ -93,23 +94,37 @@ PHOTOS_LIBRARY_SUFFIXES = (".photoslibrary",)
 FFMPEG_PATH = shutil.which("ffmpeg")
 FFPROBE_PATH = shutil.which("ffprobe")
 EXIFTOOL_PATH = shutil.which("exiftool")
-# Browser WebCodecs helper for video thumbnails and metadata. Loading the pinned
-# CDN bundle at runtime keeps this script self-contained and avoids requiring
-# ffmpeg for the common preview path. Set DEDUP_MEDIABUNNY_SRC to override the
-# bundle URL; set it to an empty value to disable Mediabunny.
-DEFAULT_MEDIABUNNY_SRC = "https://unpkg.com/mediabunny@1.45.4/dist/bundles/mediabunny.cjs"
-MEDIABUNNY_SRC = os.environ.get("DEDUP_MEDIABUNNY_SRC", DEFAULT_MEDIABUNNY_SRC).strip()
+MEDIABUNNY_VERSION = "1.45.4"
+MEDIABUNNY_ASSET_NAME = f"mediabunny-{MEDIABUNNY_VERSION}.cjs"
+MEDIABUNNY_ASSET_ROUTE = f"/assets/{MEDIABUNNY_ASSET_NAME}"
+MEDIABUNNY_ASSET_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "assets",
+    MEDIABUNNY_ASSET_NAME,
+)
+# Browser WebCodecs helper for video thumbnails and metadata. The default bundle
+# is served locally from this package so review sessions do not depend on a
+# public CDN. Set DEDUP_MEDIABUNNY_SRC to override the script URL; set it to an
+# empty value to disable Mediabunny.
+DEFAULT_MEDIABUNNY_SRC = MEDIABUNNY_ASSET_ROUTE
+
+
+def get_mediabunny_src():
+    configured = os.environ.get("DEDUP_MEDIABUNNY_SRC")
+    if configured is not None:
+        return configured.strip()
+    return DEFAULT_MEDIABUNNY_SRC if os.path.isfile(MEDIABUNNY_ASSET_PATH) else ""
+
+
+MEDIABUNNY_SRC = get_mediabunny_src()
 
 
 def mediabunny_script_tag(src):
-    # `defer` so the CDN fetch never blocks page render; availability is checked
+    # `defer` so loading the helper never blocks page render; availability is checked
     # lazily in JS (mbReady) when thumbnails hydrate, by which point it has loaded.
     if not src:
         return ""
-    return '<script defer src="' + src + '"></script>\n'
-
-
-MEDIABUNNY_SCRIPT_TAG = mediabunny_script_tag(MEDIABUNNY_SRC)
+    return '<script defer src="' + html.escape(src, quote=True) + '"></script>\n'
 COPY_PATTERN = re.compile(r"(\bcopy\b|\bduplicate\b|\s\(\d+\)$)", re.IGNORECASE)
 # NAS server-side recycle folders, checked at the volume root.
 # Synology DSM uses #recycle. QNAP uses @Recycle. Samba recycle often uses .recycle.
@@ -550,13 +565,18 @@ def render_thumbnail(path, width=360, height=240, thumb_index=0):
             completed = subprocess.run(
                 build_thumbnail_command(path, kind, width, height, FFMPEG_PATH, timestamp),
                 stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
                 check=False,
                 timeout=5,
             )
-    except (OSError, subprocess.TimeoutExpired):
+    except subprocess.TimeoutExpired:
+        print(f"[dedup] ffmpeg thumbnail timed out: {path}", file=sys.stderr)
+        return None
+    except OSError:
         return None
     if completed.returncode != 0:
+        msg = completed.stderr.decode("utf-8", errors="replace").strip()
+        print(f"[dedup] ffmpeg thumbnail failed (exit {completed.returncode}): {msg or '(no output)'}", file=sys.stderr)
         return None
 
     return completed.stdout
@@ -1174,7 +1194,7 @@ def build_browser_html():
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Dedup Review</title>
 """
-+ MEDIABUNNY_SCRIPT_TAG
++ mediabunny_script_tag(get_mediabunny_src())
 + """<style>"""
 + _SHARED_CSS
 + """
@@ -1495,8 +1515,8 @@ body.list-view .file-reason { flex: 1; min-width: 60px; font-size: 10px; color: 
   </div>
 </div>
 <script>
-// mediabunny (browser WebCodecs) availability, checked lazily so the deferred CDN
-// script never blocks render. Falsy => fall back to the server ffmpeg thumbnail path.
+// mediabunny (browser WebCodecs) availability, checked lazily so the deferred
+// local script never blocks render. Falsy => use the server ffmpeg thumbnail path.
 function mbReady() { return typeof window.Mediabunny !== "undefined" && window.Mediabunny !== null; }
 let mbReadyPromise = null;
 let allData = {groups: []};
@@ -1537,12 +1557,13 @@ const thumbTimers = new WeakMap();
 const thumbPreloadQueue = [];
 const queuedThumbPreloads = new Set();
 const completedThumbPreloads = new Set();
-let thumbPreloadActive = false;
+let thumbPreloadActive = 0;
 const mbInputs = new Map();
 const mbThumbCache = new Map();
 const mbThumbInflight = new Map();
 const MAX_MB_INPUTS = 200;
 const MAX_MB_THUMB_CACHE = 500;
+const MAX_THUMB_PRELOADS = 2;
 const MIN_VIDEO_HOVER_THUMBNAILS = 4;
 const MAX_VIDEO_HOVER_THUMBNAILS = 12;
 const VIDEO_MULTI_THUMBNAIL_SECONDS = 15;
@@ -2110,8 +2131,8 @@ async function hydrateThumb(img) {
   const thumbIndex = Math.max(0, Number(img.dataset.thumbIndex || "0"));
   const expectedIndex = String(thumbIndex);
   const fallbackSrc = ffmpegThumbUrl(fileId, thumbIndex);
+  if (!fileId || !mbReady()) return;
   try {
-    if (!fileId || !(await waitForMediabunny())) throw new Error("mediabunny unavailable");
     const { width, height } = videoThumbDimensions(img);
     const timestamp = Math.max(0, Number(img.dataset.thumbTimestamp || "1"));
     const src = await mbCanvasThumb(fileId, timestamp, width, height, thumbIndex);
@@ -2155,7 +2176,7 @@ async function hydrateVideoFile(file) {
         let payload;
         let source = "mediabunny";
         try {
-          if (!(await waitForMediabunny())) throw new Error("mediabunny unavailable");
+          if (!mbReady()) throw new Error("mediabunny unavailable");
           payload = await mbVideoMetadata(file);
         } catch {
           payload = await fetchServerMetadata(file);
@@ -2216,20 +2237,23 @@ function preloadFfmpegThumb(fileId, thumbIndex) {
   });
 }
 async function processVideoThumbPreloadQueue() {
-  if (thumbPreloadActive) return;
-  const item = thumbPreloadQueue.shift();
-  if (!item) return;
-  thumbPreloadActive = true;
-  try {
-    if (mbReady()) await mbCanvasThumb(item.fileId, item.timestamp, item.width, item.height, item.thumbIndex);
-    else await preloadFfmpegThumb(item.fileId, item.thumbIndex);
-  } catch {
-    await preloadFfmpegThumb(item.fileId, item.thumbIndex);
-  } finally {
-    queuedThumbPreloads.delete(item.key);
-    completedThumbPreloads.add(item.key);
-    thumbPreloadActive = false;
-    processVideoThumbPreloadQueue();
+  while (thumbPreloadActive < MAX_THUMB_PRELOADS && thumbPreloadQueue.length) {
+    const item = thumbPreloadQueue.shift();
+    thumbPreloadActive += 1;
+    (async () => {
+      const ffmpegPreload = preloadFfmpegThumb(item.fileId, item.thumbIndex);
+      try {
+        if (mbReady()) await mbCanvasThumb(item.fileId, item.timestamp, item.width, item.height, item.thumbIndex);
+        await ffmpegPreload;
+      } catch {
+        await ffmpegPreload;
+      } finally {
+        queuedThumbPreloads.delete(item.key);
+        completedThumbPreloads.add(item.key);
+        thumbPreloadActive -= 1;
+        processVideoThumbPreloadQueue();
+      }
+    })();
   }
 }
 function preloadGroupVideoThumbs(thumbs, index) {
@@ -2253,6 +2277,8 @@ function startGroupVideoThumbCycle(groupEl) {
       const thumbIndex = index % count;
       img.dataset.thumbIndex = String(thumbIndex);
       setVideoThumbTimestamp(img, thumbIndex);
+      img.dataset.thumbSource = "ffmpeg";
+      img.src = ffmpegThumbUrl(img.dataset.fileId, thumbIndex);
       delete img.dataset.thumbLoaded;
       hydrateThumb(img);
     });
@@ -2271,6 +2297,8 @@ function stopGroupVideoThumbCycle(groupEl) {
   getGroupVideoThumbs(groupEl).forEach((img) => {
     img.dataset.thumbIndex = "0";
     setVideoThumbTimestamp(img, 0);
+    img.dataset.thumbSource = "ffmpeg";
+    img.src = ffmpegThumbUrl(img.dataset.fileId, 0);
     delete img.dataset.prefetched;
     delete img.dataset.thumbLoaded;
     hydrateThumb(img);
@@ -2597,7 +2625,7 @@ function mediaHtml(file) {
   if (file.mediaKind === "image") return `<img loading="lazy" src="${authUrl(`/thumb/${urlId(file.id)}`)}" onerror="this.onerror=null;this.src='${authUrl(`/media/${urlId(file.id)}`)}'" alt="">`;
   if (file.mediaKind === "video") {
     const count = Math.max(1, Number(file.thumbnailCount || 1));
-    return `<img loading="lazy" onerror="fallbackVideoThumb(this)" data-video-thumb="1" data-file-id="${esc(file.id)}" data-file-name="${esc(file.name)}" data-video-order="${file.defaultSortIndex || 0}" data-thumb-index="0" data-thumb-count="${count}" data-thumb-timestamp="1" alt="">`;
+    return `<img loading="lazy" src="${authUrlAttr(`/thumb/${urlId(file.id)}?i=0`)}" onerror="fallbackVideoThumb(this)" data-video-thumb="1" data-file-id="${esc(file.id)}" data-file-name="${esc(file.name)}" data-video-order="${file.defaultSortIndex || 0}" data-thumb-index="0" data-thumb-count="${count}" data-thumb-timestamp="1" alt="">`;
   }
   if (file.previewKind === "pdf") return `<iframe loading="lazy" src="${authUrl(`/pdf/${urlId(file.id)}`)}#page=1&toolbar=0&navpanes=0" title="PDF preview for ${esc(file.name)}"></iframe>`;
   if (file.previewKind === "text") return `<pre class="text-preview" data-text-id="${esc(file.id)}">Loading...</pre>`;
@@ -3500,17 +3528,47 @@ class _BaseHandler(BaseHTTPRequestHandler):
     def log_message(self, format_text, *args):
         return
 
+    def send_error(self, code, message=None, explain=None):
+        try:
+            super().send_error(code, message=message, explain=explain)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
+
     def send_bytes(self, status, body, content_type, cacheable=False):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "public, max-age=3600" if cacheable else "no-store")
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
 
     def send_json(self, payload, status=200):
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         self.send_bytes(status, body, "application/json")
+
+    def serve_mediabunny_asset(self):
+        if not os.path.isfile(MEDIABUNNY_ASSET_PATH):
+            self.send_error(404)
+            return
+        try:
+            with open(MEDIABUNNY_ASSET_PATH, "rb") as file_obj:
+                body = file_obj.read()
+        except OSError:
+            self.send_error(404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/javascript; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "public, max-age=31536000")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
 
     def read_json_body(self):
         raw = self.headers.get("Content-Length", "0") or "0"
@@ -3586,9 +3644,14 @@ class _BaseHandler(BaseHTTPRequestHandler):
             self.end_headers()
             with open(path, "rb") as file_obj:
                 shutil.copyfileobj(file_obj, self.wfile)
-        except OSError:
+        except OSError as exc:
+            if isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)):
+                return
             if not self.wfile.closed:
-                self.send_error(404)
+                try:
+                    self.send_error(404)
+                except OSError:
+                    pass
 
 
 def make_browser_handler(state):
@@ -3603,6 +3666,9 @@ def make_browser_handler(state):
 
         def do_GET(self):
             parsed = urllib.parse.urlparse(self.path)
+            if parsed.path == MEDIABUNNY_ASSET_ROUTE:
+                self.serve_mediabunny_asset()
+                return
             if not self.is_authorized(parsed):
                 self.reject_unauthorized()
                 return

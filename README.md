@@ -47,7 +47,7 @@ brew install exiftool      # image EXIF such as camera, lens, aperture, and GPS
 
 `ffmpeg` also provides `ffprobe`, which `dedup` uses for media metadata.
 
-Browser-side video decoding loads Mediabunny from a pinned CDN URL at runtime by default, keeping `dedup` single-file and reducing dependence on `ffmpeg` for previews. Advanced users can set `DEDUP_MEDIABUNNY_SRC` to a different bundle URL, or to an empty value to disable Mediabunny and rely on the server-side fallback.
+Browser-side video decoding uses the Mediabunny bundle shipped with `dedup`; the review UI does not load a public CDN at runtime by default. Video thumbnails still use local `ffmpeg` first for fast first paint, then Mediabunny can replace or preload frames in the browser when it is available. Advanced users can set `DEDUP_MEDIABUNNY_SRC` to a trusted custom bundle URL, or to an empty value to disable Mediabunny and rely only on the server-side `ffmpeg` path.
 
 ## Usage
 
