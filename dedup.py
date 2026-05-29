@@ -138,6 +138,8 @@ class FileInfo:
     path: str
     size: int
     mtime_ns: int
+    st_dev: int = 0
+    st_ino: int = 0
 
 
 @dataclass(frozen=True)
@@ -173,6 +175,7 @@ class ScanStats:
     scanned: int = 0
     ignored: int = 0
     unreadable: int = 0
+    cloud_skipped: int = 0
     dirs_scanned: int = 0
     size_candidates: int = 0
     duplicate_groups: int = 0
@@ -184,7 +187,12 @@ class ScanStats:
         print(f"Scanned files:     {self.scanned}")
         print(f"Scanned dirs:      {self.dirs_scanned}")
         print(f"Ignored entries:   {self.ignored}")
-        print(f"Unreadable entries:{self.unreadable}")
+        if self.unreadable:
+            print(f"WARNING: {self.unreadable} unreadable file(s) skipped — check file permissions.")
+        else:
+            print(f"Unreadable entries: 0")
+        if self.cloud_skipped:
+            print(f"Cloud placeholders skipped: {self.cloud_skipped} (iCloud files not yet downloaded locally)")
         print(f"Size candidates:   {self.size_candidates}")
         print(f"Duplicate groups:  {self.duplicate_groups}")
         print(f"Duplicate files:   {self.duplicate_files}")
@@ -753,6 +761,22 @@ def finish_progress():
     print()
 
 
+_SF_DATALESS = 0x40000000  # BSD stat flag set on macOS 10.15+ iCloud Drive evicted files
+
+
+def _is_cloud_placeholder(file_stat):
+    """Return True if the file is a cloud-storage placeholder with no local bytes.
+
+    On macOS, iCloud Drive marks evicted (cloud-only) files with the SF_DATALESS
+    BSD flag.  Reading such a file would trigger a silent background download;
+    skipping them prevents unexpected gigabytes of iCloud sync during a scan.
+    The file is counted in stats.cloud_skipped so users know why it is absent.
+    """
+    if CURRENT_OS == OS_MACOS:
+        return bool(getattr(file_stat, "st_flags", 0) & _SF_DATALESS)
+    return False
+
+
 def scan_by_size(options, stats):
     current_real = os.path.realpath(options.path)
     if current_real != options.real_path:
@@ -789,8 +813,12 @@ def scan_by_size(options, stats):
             if not stat.S_ISREG(file_stat.st_mode):
                 stats.ignored += 1
                 continue
+            if _is_cloud_placeholder(file_stat):
+                stats.cloud_skipped += 1
+                stats.ignored += 1
+                continue
 
-            info = FileInfo(path, file_stat.st_size, file_stat.st_mtime_ns)
+            info = FileInfo(path, file_stat.st_size, file_stat.st_mtime_ns, file_stat.st_dev, file_stat.st_ino)
             previous = singletons.pop(info.size, None)
             if previous is not None:
                 sizes[info.size].extend((previous, info))
@@ -949,6 +977,14 @@ def build_browser_payload(duplicate_groups):
     next_id = 1
     for group_idx, group in enumerate(duplicate_groups):
         original = guess_original_filename(group.files)
+        # Detect hardlink partners: multiple paths that share (st_dev, st_ino).
+        # Trashing a hardlink does not reclaim disk space until all links are gone.
+        inode_counts = {}
+        for info in group.files:
+            if info.st_dev or info.st_ino:
+                key = (info.st_dev, info.st_ino)
+                inode_counts[key] = inode_counts.get(key, 0) + 1
+        hardlink_inodes = {k for k, v in inode_counts.items() if v > 1}
         group_files = []
         for info in sorted(group.files, key=lambda item: (item.mtime_ns, item.path)):
             file_id = str(next_id)
@@ -956,6 +992,7 @@ def build_browser_payload(duplicate_groups):
             media_kind = get_media_kind(info.path)
             extension = os.path.splitext(info.path or "")[1].lower()
             preview_kind = media_kind or ("pdf" if extension in PDF_EXTENSIONS else "text" if extension in TEXT_EXTENSIONS else None)
+            is_hardlink = bool(hardlink_inodes and (info.st_dev, info.st_ino) in hardlink_inodes)
             group_files.append({
                 "id": file_id,
                 "path": info.path,
@@ -968,6 +1005,7 @@ def build_browser_payload(duplicate_groups):
                 "previewKind": preview_kind,
                 "thumbnailCount": 1,
                 "isOriginalGuess": info.path == original.path,
+                "isHardlink": is_hardlink,
                 "selectionReason": "original guess" if info.path == original.path else "auto-marked copy",
                 "originalReason": describe_original_reason(info, group.files, original),
                 "defaultTrash": info.path != original.path,
@@ -1140,8 +1178,10 @@ button.danger-action:hover:not(:disabled) { opacity: .85; }
 .badge { font-size: 11px; line-height: 16px; padding: 1px 6px; border-radius: 999px; background: var(--surface); color: var(--muted); height: 18px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .badge.original { background: #fef9c3; color: #854d0e; }
 .badge.manual { color: var(--text); font-style: italic; }
+.badge.hardlink { background: #dbeafe; color: #1d4ed8; }
 @media (prefers-color-scheme: dark) {
   .badge.original { background: #422006; color: #fde68a; }
+  .badge.hardlink { background: #1e3a5f; color: #93c5fd; }
 }
 .choice { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--line); margin-top: auto; }
 .choice button { border: 0; border-radius: 0; padding: 6px; font-size: 12px; font-weight: 500; background: transparent; color: var(--muted); }
@@ -1423,6 +1463,7 @@ const manualChoices = new Set();
 let undoSnapshot = null;
 let trashedOnly = false;
 let isSubmitting = false;
+let sessionId = null;
 let previewContext = null;
 let previewRenderToken = 0;
 let previewPlayer = null;
@@ -1759,6 +1800,7 @@ function refreshSelectionUi(changedIds = []) {
   }
   changedIds.forEach(updateFileCard);
   updateStats();
+  saveSelections();
 }
 function fileMatches(file, filters) {
   const kind = file.previewKind || "other";
@@ -2928,6 +2970,7 @@ async function hydrateTextPreviews(root) {
 function fileBadgesHtml(file, isTrash) {
   const badges = [`<span class="badge">${esc(file.sizeLabel)}</span>`];
   if (file.isOriginalGuess) badges.push(`<span class="badge original">original</span>`);
+  if (file.isHardlink) badges.push(`<span class="badge hardlink" title="Hardlink — trashing this copy won't free disk space until every link to this inode is removed">hardlink</span>`);
   const reason = selectionReasonForFile(file, isTrash);
   if (reason === "manual") badges.push(`<span class="badge manual">manual</span>`);
   else if (reason) badges.push(`<span class="badge">${esc(reason)}</span>`);
@@ -3147,6 +3190,32 @@ function render() {
   updateStats(filters);
   refreshActiveGroupHighlight();
   refreshActiveFileHighlight();
+  saveSelections();
+}
+function saveSelections() {
+  if (!sessionId) return;
+  try {
+    localStorage.setItem(
+      "dedup:" + sessionId,
+      JSON.stringify({ trash: [...trash], folderRules })
+    );
+  } catch {}
+}
+function restoreFromLocalStorage() {
+  if (!sessionId) return;
+  try {
+    const raw = localStorage.getItem("dedup:" + sessionId);
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    if (Array.isArray(data.trash)) {
+      trash.clear();
+      data.trash.forEach(id => { if (fileById.has(String(id))) trash.add(String(id)); });
+    }
+    if (Array.isArray(data.folderRules) && data.folderRules.length) {
+      folderRules = data.folderRules;
+      nextFolderRuleId = folderRules.reduce((m, r) => Math.max(m, Number(r.id || 0) + 1), nextFolderRuleId);
+    }
+  } catch {}
 }
 async function submitSelection(cancelled) {
   if (isSubmitting) return;
@@ -3169,6 +3238,7 @@ async function submitSelection(cancelled) {
   }
   try {
     const response = await fetch("/api/selection", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({cancelled, trashIds: Array.from(trash)}) });
+    if (response.status === 409) throw new Error("This session was already submitted from another tab. Close this tab.");
     if (!response.ok) throw new Error("Server error");
     document.body.innerHTML = `<main style="display:flex;align-items:center;justify-content:center;height:100vh;text-align:center;"><div><h1>${cancelled ? "Cancelled" : "Done"}</h1><p>Returning to terminal...</p><button onclick="window.close()">Close Window</button></div></main>`;
     setTimeout(() => window.close(), 800);
@@ -3222,6 +3292,7 @@ async function init() {
       if (offset === 0) {
         requireMoveConfirmation = Boolean(payload.requireMoveConfirmation);
         totalGroupCount = payload.totalGroupCount || 0;
+        sessionId = payload.sessionId || null;
         allData = { groups: [] };
 
         if (totalGroupCount === 0) {
@@ -3245,6 +3316,7 @@ async function init() {
   }
 
   allFilesList.forEach(f => { if (f.defaultTrash) trash.add(f.id); });
+  restoreFromLocalStorage();
   setTrashedOnly(false);
   if (subtitleEl) subtitleEl.textContent = "";
   try { paneOpen = localStorage.getItem("dedupPaneOpen") !== "false"; } catch {}
@@ -3335,6 +3407,8 @@ class BrowserSelectionState:
         payload = build_browser_payload(duplicate_groups)
         self.groups = payload["groups"]
         self.require_move_confirmation = require_move_confirmation
+        self.session_id = os.urandom(16).hex()
+        self._submitted = False
         self._path_by_id = {
             file_info["id"]: file_info["path"]
             for group in self.groups
@@ -3346,7 +3420,12 @@ class BrowserSelectionState:
         self.cache_lock = threading.Lock()
         self.thumbnail_inflight = {}
         self._groups_json = json.dumps(
-            {"groups": self.groups, "requireMoveConfirmation": self.require_move_confirmation},
+            {
+                "groups": self.groups,
+                "requireMoveConfirmation": self.require_move_confirmation,
+                "sessionId": self.session_id,
+                "totalGroupCount": len(self.groups),
+            },
             separators=(",", ":"),
         ).encode("utf-8")
 
@@ -3489,6 +3568,7 @@ def make_browser_handler(state):
                     payload = {"groups": sliced, "totalGroupCount": len(state.groups)}
                     if offset == 0:
                         payload["requireMoveConfirmation"] = state.require_move_confirmation
+                        payload["sessionId"] = state.session_id
                     self.send_json(payload)
             elif parsed.path.startswith("/media/"):
                 self.serve_media(urllib.parse.unquote(parsed.path[7:]))
@@ -3515,6 +3595,11 @@ def make_browser_handler(state):
             if parsed.path != "/api/selection":
                 self.send_error(404)
                 return
+            with state.cache_lock:
+                if state._submitted:
+                    self.send_json({"ok": False, "reason": "already-submitted"}, 409)
+                    return
+                state._submitted = True
             payload, ok = self.read_json_body()
             if not ok:
                 return
@@ -3644,7 +3729,7 @@ def _bind_server(handler, port):
     except OSError as e:
         if e.errno != errno.EADDRINUSE:
             raise
-        print(f"Port {port} is busy, using a random port instead.", flush=True)
+        print(f"\nNOTICE: Port {port} is busy — using a random port. Check the URL printed below.\n", flush=True)
         return ThreadingHTTPServer(("127.0.0.1", 0), handler)
 
 
@@ -3653,9 +3738,10 @@ def _run_browser_session(state, handler_factory, url_label, cleanup=None, port=7
     url = f"http://127.0.0.1:{server.server_port}/"
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
-    print(f"\n{url_label}: {url}")
-    print("Press Ctrl+C to cancel, or use the browser UI.")
-    print(flush=True)
+    print(f"\n{url_label}")
+    print(f"  → {url}")
+    print("  (If the browser did not open automatically, copy the URL above.)")
+    print("Press Ctrl+C to cancel.", flush=True)
     try:
         webbrowser.open(url)
     except Exception:
@@ -4269,63 +4355,72 @@ def trash_files(
 
     # Per-volume cached decision for "no trash on volume" situations.
     no_trash_strategy = {}
-
-    for path in validated_paths:
-        try:
-            trash_method = move_to_trash_safely(path, send_to_trash)
-        except VolumeHasNoTrashError as no_trash:
-            strategy = no_trash_strategy.get(no_trash.volume_root)
-            if strategy is None:
-                strategy = _decide_no_trash_strategy(
-                    no_trash.volume_root,
-                    validated_paths,
-                    permanent_on_no_trash,
-                    allow_slow_local_trash,
-                    interactive,
-                    prompt_func,
-                )
-                no_trash_strategy[no_trash.volume_root] = strategy
+    try:
+        for path in validated_paths:
             try:
-                if strategy == "permanent":
-                    _ensure_no_symlink_replacement(path)
-                    os.remove(path)
-                    trash_method = "permanent-delete"
-                elif strategy == "local":
-                    _ensure_no_symlink_replacement(path)
-                    move_to_local_trash(path)
-                    trash_method = "local-trash"
-                else:
+                trash_method = move_to_trash_safely(path, send_to_trash)
+            except VolumeHasNoTrashError as no_trash:
+                strategy = no_trash_strategy.get(no_trash.volume_root)
+                if strategy is None:
+                    strategy = _decide_no_trash_strategy(
+                        no_trash.volume_root,
+                        validated_paths,
+                        permanent_on_no_trash,
+                        allow_slow_local_trash,
+                        interactive,
+                        prompt_func,
+                    )
+                    no_trash_strategy[no_trash.volume_root] = strategy
+                try:
+                    if strategy == "permanent":
+                        _ensure_no_symlink_replacement(path)
+                        os.remove(path)
+                        trash_method = "permanent-delete"
+                    elif strategy == "local":
+                        _ensure_no_symlink_replacement(path)
+                        move_to_local_trash(path)
+                        trash_method = "local-trash"
+                    else:
+                        print(
+                            f"Skipped ({no_trash}; volume has no trash and strategy is 'skip'): {path}",
+                            file=sys.stderr,
+                        )
+                        result.skipped += 1
+                        continue
+                except Exception as fallback_error:
                     print(
-                        f"Skipped ({no_trash}; volume has no trash and strategy is 'skip'): {path}",
+                        f"Error trashing {path}: {no_trash}; fallback ({strategy}) failed: {fallback_error}",
                         file=sys.stderr,
                     )
-                    result.skipped += 1
+                    result.errors += 1
                     continue
-            except Exception as fallback_error:
-                print(
-                    f"Error trashing {path}: {no_trash}; fallback ({strategy}) failed: {fallback_error}",
-                    file=sys.stderr,
-                )
+            except Exception as exc:
+                print(f"Error trashing {path}: {exc}", file=sys.stderr)
                 result.errors += 1
                 continue
-        except Exception as exc:
-            print(f"Error trashing {path}: {exc}", file=sys.stderr)
-            result.errors += 1
-            continue
 
-        if trash_method == "trash-cmd":
-            print(f"Moved to trash via /usr/bin/trash: {path}")
-        elif trash_method == "nas-recycle":
-            print(f"Moved to NAS recycle folder (no network copy): {path}")
-        elif trash_method == "permanent-delete":
-            print(f"Permanently deleted (volume has no recycle bin): {path}")
-            result.permanently_deleted += 1
-            continue
-        elif trash_method == "local-trash":
-            print(f"Copied to local ~/.Trash (slow network fallback): {path}")
-        else:
-            print(f"Moved to trash: {path}")
-        result.trashed += 1
+            if trash_method == "trash-cmd":
+                print(f"Moved to trash via /usr/bin/trash: {path}")
+            elif trash_method == "nas-recycle":
+                print(f"Moved to NAS recycle folder (no network copy): {path}")
+            elif trash_method == "permanent-delete":
+                print(f"Permanently deleted (volume has no recycle bin): {path}")
+                result.permanently_deleted += 1
+                continue
+            elif trash_method == "local-trash":
+                print(f"Copied to local ~/.Trash (slow network fallback): {path}")
+            else:
+                print(f"Moved to trash: {path}")
+            result.trashed += 1
+    except KeyboardInterrupt:
+        done = result.trashed + result.errors + result.skipped + result.permanently_deleted
+        remaining = len(validated_paths) - done
+        print(
+            f"\nInterrupted — {result.trashed} file(s) moved to Trash, "
+            f"{remaining} not yet processed.",
+            file=sys.stderr,
+        )
+        raise
     return result
 
 
@@ -4396,77 +4491,87 @@ def trash_empty_dirs(
         return result
 
     no_trash_strategy = {}
-    for path in dirs:
-        if not is_effectively_empty_dir(path, options):
-            print(f"Skipped (directory is no longer empty): {path}", file=sys.stderr)
-            result.skipped += 1
-            continue
-        try:
-            trash_method = move_to_trash_safely(path, send_to_trash)
-        except VolumeHasNoTrashError as no_trash:
-            strategy = no_trash_strategy.get(no_trash.volume_root)
-            if strategy is None:
-                strategy = _decide_no_trash_strategy(
-                    no_trash.volume_root,
-                    dirs,
-                    permanent_on_no_trash,
-                    allow_slow_local_trash,
-                    interactive,
-                    prompt_func,
-                )
-                no_trash_strategy[no_trash.volume_root] = strategy
+    try:
+        for path in dirs:
+            if not is_effectively_empty_dir(path, options):
+                print(f"Skipped (directory is no longer empty): {path}", file=sys.stderr)
+                result.skipped += 1
+                continue
             try:
-                if strategy == "permanent":
-                    if not is_effectively_empty_dir(path, options):
+                trash_method = move_to_trash_safely(path, send_to_trash)
+            except VolumeHasNoTrashError as no_trash:
+                strategy = no_trash_strategy.get(no_trash.volume_root)
+                if strategy is None:
+                    strategy = _decide_no_trash_strategy(
+                        no_trash.volume_root,
+                        dirs,
+                        permanent_on_no_trash,
+                        allow_slow_local_trash,
+                        interactive,
+                        prompt_func,
+                    )
+                    no_trash_strategy[no_trash.volume_root] = strategy
+                try:
+                    if strategy == "permanent":
+                        if not is_effectively_empty_dir(path, options):
+                            print(
+                                f"Skipped (directory no longer empty before delete): {path}",
+                                file=sys.stderr,
+                            )
+                            result.skipped += 1
+                            continue
+                        _ensure_no_symlink_replacement(path)
+                        shutil.rmtree(path)
+                        trash_method = "permanent-delete"
+                    elif strategy == "local":
+                        _ensure_no_symlink_replacement(path)
+                        move_to_local_trash(path)
+                        trash_method = "local-trash"
+                    else:
                         print(
-                            f"Skipped (directory no longer empty before delete): {path}",
+                            f"Skipped ({no_trash}; volume has no trash and strategy is 'skip'): {path}",
                             file=sys.stderr,
                         )
                         result.skipped += 1
                         continue
-                    _ensure_no_symlink_replacement(path)
-                    shutil.rmtree(path)
-                    trash_method = "permanent-delete"
-                elif strategy == "local":
-                    _ensure_no_symlink_replacement(path)
-                    move_to_local_trash(path)
-                    trash_method = "local-trash"
-                else:
+                except Exception as fallback_error:
                     print(
-                        f"Skipped ({no_trash}; volume has no trash and strategy is 'skip'): {path}",
+                        f"Error trashing {path}: {no_trash}; fallback ({strategy}) failed: {fallback_error}",
                         file=sys.stderr,
                     )
-                    result.skipped += 1
+                    result.errors += 1
                     continue
-            except Exception as fallback_error:
-                print(
-                    f"Error trashing {path}: {no_trash}; fallback ({strategy}) failed: {fallback_error}",
-                    file=sys.stderr,
-                )
+            except FileNotFoundError:
+                print(f"Skipped (no longer exists): {path}", file=sys.stderr)
+                result.skipped += 1
+                continue
+            except Exception as exc:
+                print(f"Error trashing {path}: {exc}", file=sys.stderr)
                 result.errors += 1
                 continue
-        except FileNotFoundError:
-            print(f"Skipped (no longer exists): {path}", file=sys.stderr)
-            result.skipped += 1
-            continue
-        except Exception as exc:
-            print(f"Error trashing {path}: {exc}", file=sys.stderr)
-            result.errors += 1
-            continue
 
-        if trash_method == "trash-cmd":
-            print(f"Moved to trash via /usr/bin/trash: {path}")
-        elif trash_method == "nas-recycle":
-            print(f"Moved to NAS recycle folder (no network copy): {path}")
-        elif trash_method == "permanent-delete":
-            print(f"Permanently deleted (volume has no recycle bin): {path}")
-            result.permanently_deleted += 1
-            continue
-        elif trash_method == "local-trash":
-            print(f"Copied to local ~/.Trash (slow network fallback): {path}")
-        else:
-            print(f"Moved to trash: {path}")
-        result.trashed += 1
+            if trash_method == "trash-cmd":
+                print(f"Moved to trash via /usr/bin/trash: {path}")
+            elif trash_method == "nas-recycle":
+                print(f"Moved to NAS recycle folder (no network copy): {path}")
+            elif trash_method == "permanent-delete":
+                print(f"Permanently deleted (volume has no recycle bin): {path}")
+                result.permanently_deleted += 1
+                continue
+            elif trash_method == "local-trash":
+                print(f"Copied to local ~/.Trash (slow network fallback): {path}")
+            else:
+                print(f"Moved to trash: {path}")
+            result.trashed += 1
+    except KeyboardInterrupt:
+        done = result.trashed + result.errors + result.skipped + result.permanently_deleted
+        remaining = len(dirs) - done
+        print(
+            f"\nInterrupted — {result.trashed} folder(s) moved to Trash, "
+            f"{remaining} not yet processed.",
+            file=sys.stderr,
+        )
+        raise
     return result
 
 
@@ -4588,13 +4693,81 @@ def build_options(args):
 
 def find_and_process_duplicates(argv=None):
     args = parse_args(argv if argv is not None else sys.argv[1:])
+
+    # H12: verify send2trash is available before doing any scanning work.
+    if not args.dry_run:
+        try:
+            load_send_to_trash()
+        except ImportError:
+            print(
+                "Error: 'send2trash' is not installed.\n"
+                "  Install it first:  pip install send2trash",
+                file=sys.stderr,
+            )
+            return 1
+
+    # H3: warn loudly when permanent-on-no-trash is active so users understand
+    # they opted into irreversible deletion on volumes without a recycle bin.
+    if args.permanent_on_no_trash:
+        print("\n" + "!" * 60, file=sys.stderr)
+        print(
+            "WARNING: --permanent-on-no-trash is active.\n"
+            "Files on volumes without a recycle bin will be PERMANENTLY\n"
+            "deleted and cannot be recovered. Press Ctrl+C now to abort.",
+            file=sys.stderr,
+        )
+        print("!" * 60 + "\n", file=sys.stderr)
+        if sys.stdin.isatty():
+            try:
+                input("Press Enter to continue, or Ctrl+C to abort: ")
+            except EOFError:
+                pass
+
     options = build_options(args)
+
+    # H2: require an explicit typed confirmation when scanning inside a Photos
+    # Library — moving files here can silently corrupt the SQLite database.
+    if args.allow_photo_library and is_photo_library_path(options.path):
+        print("\n" + "!" * 60, file=sys.stderr)
+        print(
+            "WARNING: Scanning inside a macOS Photos Library.\n"
+            "Moving files here can CORRUPT your library and permanently\n"
+            "destroy photos. Ensure Photos.app is closed and you have a\n"
+            "verified, complete backup before continuing.",
+            file=sys.stderr,
+        )
+        print("!" * 60, file=sys.stderr)
+        if sys.stdin.isatty():
+            try:
+                answer = input("\nType exactly 'I have a backup' to proceed: ").strip()
+            except EOFError:
+                answer = ""
+            if answer != "I have a backup":
+                print("Aborted.", file=sys.stderr)
+                return 2
+        else:
+            print(
+                "\nRefusing to proceed non-interactively with --allow-photo-library.\n"
+                "Run interactively and confirm the backup prompt.",
+                file=sys.stderr,
+            )
+            return 2
+
     duplicate_groups, stats = find_duplicates(options)
     if not duplicate_groups:
         stats.print_summary()
         if args.clean_empty_dirs:
             return _run_empty_dir_phase(args, options)
         return 0
+
+    # H15: flag when the result set is large enough to slow the browser UI.
+    if stats.duplicate_groups > 1000:
+        print(
+            f"\nNOTICE: {stats.duplicate_groups} duplicate groups found. "
+            "The browser UI may be slow for very large result sets.\n"
+            "Consider narrowing the scan path or adding --ignore-dir.",
+            flush=True,
+        )
 
     dry_run = args.dry_run
     files_to_trash = select_files_in_browser(
@@ -4625,6 +4798,20 @@ def find_and_process_duplicates(argv=None):
     )
     stats.print_summary(result)
     exit_code = 0 if result.errors == 0 else 1
+
+    # H4: make errors and unexpected skips stand out so they aren't missed.
+    if result.errors:
+        print(
+            f"\nWARNING: {result.errors} file(s) could not be trashed (see above).\n"
+            "Check whether your drive is still connected.",
+            file=sys.stderr,
+        )
+    if not dry_run and result.skipped:
+        print(
+            f"NOTE: {result.skipped} file(s) were skipped "
+            "(changed or moved since the scan).",
+            file=sys.stderr,
+        )
 
     if args.clean_empty_dirs:
         exit_code = max(exit_code, _run_empty_dir_phase(args, options))
