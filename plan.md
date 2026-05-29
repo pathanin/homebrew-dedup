@@ -1,43 +1,54 @@
-# Bundle Mediabunny Locally and Restore Fast Thumbnail First Paint
+# Mediabunny Removed — ffmpeg-only Thumbnails
 
 ## Summary
 
-Replace runtime CDN loading of Mediabunny with a vendored local bundle served by the local review server. Preserve fast first paint by using server-side `ffmpeg` thumbnail URLs as the initial video thumbnail source, then use Mediabunny only as an opportunistic browser-side enhancement when it is already loaded.
+Mediabunny (WebCodecs client-side decoder) has been removed entirely from `dedup.py`.
+Video thumbnails are served exclusively from the server-side ffmpeg path with the persistent
+`ThumbnailCache`. The preview modal uses native `<video>` for all formats.
 
-## Implementation
+## Why removed
 
-- Vendor `assets/mediabunny-1.45.4.cjs` with its MPL-2.0 notice and include `assets/MEDIABUNNY_LICENSE.txt`.
-- Resolve the default Mediabunny script to `/assets/mediabunny-1.45.4.cjs` only when the local asset exists.
-- Preserve `DEDUP_MEDIABUNNY_SRC` behavior: non-empty values override the script URL, and an empty value disables Mediabunny.
-- Serve the local Mediabunny asset before session-token authorization because it contains no user data.
-- Send the asset as `text/javascript; charset=utf-8` with `X-Content-Type-Options: nosniff`.
-- Do not fall back to a public CDN if the local asset is missing.
+Mediabunny required downloading the full video file to the browser before it could extract a
+frame. For large files this was significantly slower than serving a pre-cached ffmpeg JPEG
+(~10–50 KB). Testing confirmed it was slower than server-side ffmpeg in all real-world cases.
+The added complexity (WebCodecs secure-context requirement, in-page cache, CDN or local bundle
+management, preview player fallback machinery) had no net benefit.
 
-## Thumbnail Behavior
+## What changed
 
-- Grid video thumbnails start with `/thumb/<id>?i=0` so the browser can fetch a local `ffmpeg` JPEG immediately.
-- `hydrateThumb()` does not wait for Mediabunny; if `mbReady()` is false, it leaves the current `ffmpeg` thumbnail intact.
-- Hover cycling updates the `/thumb/<id>?i=<index>` source before any Mediabunny work.
-- Side-pane video thumbnails keep the same immediate `/thumb` first-paint behavior.
-- Thumbnail preloading uses a small capped queue and starts the `ffmpeg` preload before optional Mediabunny cache fill.
-- Metadata hydration uses Mediabunny only when ready; otherwise it fetches server metadata immediately.
+- `MEDIABUNNY_*` constants, `get_mediabunny_src()`, `mediabunny_script_tag()` — removed from Python.
+- `assets/mediabunny-1.45.4.cjs` and `assets/MEDIABUNNY_LICENSE.txt` — deleted.
+- `import html`, `import urllib.request` — removed (were only used by mediabunny helpers).
+- All mediabunny JS removed: `mbReady`, `mbEnabled`, `waitForMediabunny`, `mbVideoTrack`,
+  `mbInputs`, `videoThumbnailCount`, `videoThumbnailTimestamp`, `setVideoThumbTimestamp`,
+  `applyVideoMetadata`, `stopPreviewPlayer`, `previewUnavailableHtml`, `nativeVideoCannotPlay`,
+  `hydratePreviewVideo`, `isPreviewPlayerCurrent`, `mountMediabunnyPreviewPlayer`.
+- `hydrateVideoFile` reverted to pre-mediabunny: direct `/meta/` fetch, sets `thumbnailCount`
+  from server payload.
+- `hydrateVideoMetadata`, `startGroupVideoThumbCycle`, `stopGroupVideoThumbCycle`,
+  `startPaneVideoCycle` simplified: no `data-thumb-timestamp`, no `setVideoThumbTimestamp`.
+- `renderPaneMeta` simplified: uses `fetchServerMetadata` directly for all media kinds.
+- `renderPreview` and `closePreview` simplified: no `stopPreviewPlayer` calls.
+- `.mb-player` CSS removed.
+- `/assets/mediabunny-*.cjs` HTTP route and `serve_mediabunny_asset()` handler removed.
+- Formula: removed `libexec.install "assets"` and mediabunny asset assertion from tests.
+- `ffmpeg` timeout raised from 5s to 20s in `generate_thumbnail()` to handle large videos.
 
-## Packaging and Docs
+## Thumbnail behaviour (current)
 
-- Install `assets/` beside `dedup.py` in the Homebrew formula.
-- Extend formula tests to assert that the local Mediabunny asset is installed.
-- Update README preview-tool docs to state that Mediabunny is bundled locally and no public CDN is loaded by default.
-- Keep `ffmpeg` and `ffprobe` documented as useful optional local tools.
+- Grid and side-pane video thumbnails: `src="/thumb/{id}?i=0"` — ffmpeg JPEG, immediate first paint.
+- Hover cycling: server `/thumb/{id}?i=N` at 650 ms intervals; preload queue pre-fetches adjacent frames.
+- Metadata (`thumbnailCount`) fetched from server `/meta/{id}`; count is computed server-side by
+  `get_video_thumbnail_count(duration)`.
+- Preview modal: native `<video src="/media/{id}">` only — no fallback player.
+- `ffmpegThumbUrl`, `fetchServerMetadata`, `hydrateVideoFile`, `hydrateVideoMetadata` — all kept.
 
-## Test Cases
+## Non-mediabunny improvements preserved
 
-- Default HTML references `/assets/mediabunny-1.45.4.cjs` and does not reference `unpkg.com` or `jsdelivr`.
-- `DEDUP_MEDIABUNNY_SRC=""` omits the Mediabunny script while grid video thumbnails still use `/thumb`.
-- Missing local asset omits the script without CDN fallback and leaves `/thumb` thumbnails intact.
-- The local asset endpoint returns `200`, JavaScript content type, `nosniff`, and bundle bytes without requiring a session token.
-- Grid video HTML includes both `src` for `/thumb/<id>?i=0` and `data-video-thumb="1"`.
-- `hydrateThumb()` does not await `waitForMediabunny()` and does not overwrite `/thumb` when Mediabunny is not ready.
-- Hover cycling sets `/thumb/<id>?i=<index>` before `hydrateThumb()`.
-- Side-pane video preview keeps `authUrlAttr(\`/thumb/${urlId(file.id)}?i=0\`)`.
-- Metadata hydration uses server `/meta` immediately when Mediabunny is not ready.
-- Validate with `python3 -m unittest -v test_dedup.py`, `brew test pathanin/dedup/dedup`, and `brew audit pathanin/dedup/dedup`.
+- Session token auth (`authUrl`, `authUrlAttr`, `DEDUP_SESSION_TOKEN`).
+- Hardlink detection and `isHardlink` badge.
+- iCloud placeholder skipping.
+- Cloud-skipped and unreadable-path reporting in `ScanStats`.
+- `.ts` MPEG-2 TS magic-byte detection.
+- ffmpeg subprocess timeout increased to 20s with stderr logging.
+- `st_dev`/`st_ino` on `FileInfo` for hardlink detection.

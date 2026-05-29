@@ -201,41 +201,6 @@ class BrowserHelperTests(unittest.TestCase):
         self.assertIn('value="audio"', html)
         self.assertIn(">Audio<", html)
 
-    def test_mediabunny_script_tag_emits_deferred_tag(self):
-        tag = dedup.mediabunny_script_tag("https://example.test/mediabunny.cjs")
-        self.assertIn("<script", tag)
-        self.assertIn("defer", tag)
-        self.assertIn("https://example.test/mediabunny.cjs", tag)
-
-    def test_mediabunny_script_tag_blank_disables(self):
-        self.assertEqual(dedup.mediabunny_script_tag(""), "")
-
-    def test_browser_html_loads_local_mediabunny_bundle_by_default(self):
-        html = dedup.build_browser_html()
-
-        self.assertIn(dedup.MEDIABUNNY_ASSET_ROUTE, html)
-        self.assertNotIn("unpkg.com", html)
-        self.assertNotIn("jsdelivr", html)
-        self.assertIn("mbReady", html)
-
-    def test_blank_mediabunny_env_disables_script_but_keeps_ffmpeg_thumbs(self):
-        with mock.patch.dict(os.environ, {"DEDUP_MEDIABUNNY_SRC": ""}):
-            html = dedup.build_browser_html()
-
-        self.assertNotIn(dedup.MEDIABUNNY_ASSET_ROUTE, html)
-        self.assertIn('src="${authUrlAttr(`/thumb/${urlId(file.id)}?i=0`)}"', html)
-
-    def test_missing_local_mediabunny_asset_disables_script_without_cdn_fallback(self):
-        missing = os.path.join(tempfile.gettempdir(), "missing-mediabunny.cjs")
-        with mock.patch.dict(os.environ, {}, clear=True):
-            with mock.patch.object(dedup, "MEDIABUNNY_ASSET_PATH", missing):
-                html = dedup.build_browser_html()
-
-        self.assertNotIn(dedup.MEDIABUNNY_ASSET_ROUTE, html)
-        self.assertNotIn("unpkg.com", html)
-        self.assertNotIn("jsdelivr", html)
-        self.assertIn('src="${authUrlAttr(`/thumb/${urlId(file.id)}?i=0`)}"', html)
-
     def test_browser_html_keeps_ffmpeg_thumbnail_fallback(self):
         # ffmpeg remains the immediate first-paint path for thumbnails.
         html = dedup.build_browser_html()
@@ -243,70 +208,29 @@ class BrowserHelperTests(unittest.TestCase):
         self.assertIn("/thumb/${urlId(fileId)}?i=${thumbIndex}", html)
         self.assertIn("fallbackVideoThumb", html)
 
-    def test_browser_html_hydrates_grid_video_thumbs_with_mediabunny(self):
+    def test_browser_html_video_thumbnails_use_ffmpeg_only(self):
         html = dedup.build_browser_html()
 
-        self.assertIn("async function mbCanvasThumb(fileId, timestamp, w, h, index = 0)", html)
-        self.assertIn("async function hydrateThumb(img)", html)
-        self.assertIn("async function waitForMediabunny(timeoutMs = 2500)", html)
-        self.assertIn("if (!fileId || !mbReady()) return;", html)
-        self.assertNotIn("if (!fileId || !(await waitForMediabunny()))", html)
-        self.assertIn("hydrateVideoThumbs(el);", html)
-        self.assertIn("new UrlSource(authUrl(`/media/${urlId(fileId)}`))", html)
-        self.assertIn("await track.canDecode()", html)
-        self.assertIn("function videoThumbnailTimestamp(duration, index, count)", html)
-        self.assertIn("setVideoThumbTimestamp(img, thumbIndex);", html)
+        self.assertNotIn("async function mbCanvasThumb", html)
+        self.assertNotIn("async function hydrateThumb", html)
+        self.assertNotIn("hydrateVideoThumbs(el);", html)
+        self.assertNotIn("waitForMediabunny", html)
+        self.assertNotIn("mbReady", html)
+        self.assertNotIn("mbEnabled", html)
+        self.assertIn("function ffmpegThumbUrl(fileId, thumbIndex)", html)
 
-    def test_browser_html_loads_video_metadata_with_mediabunny_first(self):
+    def test_browser_html_loads_video_metadata_from_server(self):
         html = dedup.build_browser_html()
         meta_start = html.index("async function hydrateVideoFile(file)")
         meta_end = html.index("async function hydrateVideoMetadata(root)", meta_start)
         meta_html = html[meta_start:meta_end]
 
-        self.assertIn("async function mbVideoMetadata(file)", html)
-        self.assertIn("await input.computeDuration()", html)
-        self.assertIn("await track.getDisplayWidth()", html)
-        self.assertIn("await track.getDisplayHeight()", html)
-        self.assertIn("await track.getCodecParameterString()", html)
-        self.assertIn('source = "mediabunny"', meta_html)
-        self.assertIn('if (!mbReady()) throw new Error("mediabunny unavailable");', meta_html)
-        self.assertNotIn("waitForMediabunny", meta_html)
-        self.assertIn('source = "server"', meta_html)
-        self.assertIn("payload = await fetchServerMetadata(file);", meta_html)
+        self.assertNotIn("applyVideoMetadata", meta_html)
+        self.assertNotIn("mbReady()", meta_html)
+        self.assertIn("file.thumbnailCount = Math.max(1, Number(payload.thumbnailCount || 1));", meta_html)
+        self.assertIn("file.thumbnailCount = 1;", meta_html)
 
-    def test_browser_html_adds_mediabunny_preview_player_fallback(self):
-        html = dedup.build_browser_html()
-
-        self.assertIn("async function hydratePreviewVideo(file, token)", html)
-        self.assertIn("function nativeVideoCannotPlay(video, token, file)", html)
-        self.assertIn("async function mountMediabunnyPreviewPlayer(file, token)", html)
-        self.assertIn("previewPlayer = await mountMediabunnyPreviewPlayer(file, token);", html)
-        self.assertIn("const { CanvasSink, AudioBufferSink } = window.Mediabunny;", html)
-        self.assertIn("if (!canDecode) throw new Error(\"codec unavailable\");", html)
-        self.assertIn("new UrlSource(authUrl(`/media/${urlId(fileId)}`))", html)
-        self.assertIn('className = "mb-player"', html)
-        self.assertIn("previewUnavailableHtml(file)", html)
-
-    def test_preview_player_teardown_closes_audio_context(self):
-        html = dedup.build_browser_html()
-
-        self.assertIn("let previewPlayer = null;", html)
-        self.assertIn("function stopPreviewPlayer()", html)
-        self.assertIn("audioContext.close().catch(() => {});", html)
-        self.assertIn("stopPreviewPlayer();\n  const oldVideo", html)
-        self.assertIn("stopPreviewPlayer();\n  const video", html)
-        self.assertIn("if (!isCurrent()) {\n      destroy();", html)
-
-    def test_preview_player_checks_render_token_after_async_work(self):
-        html = dedup.build_browser_html()
-
-        self.assertIn("function isPreviewPlayerCurrent(file, token)", html)
-        self.assertIn("token === previewRenderToken", html)
-        self.assertIn("if (!previewContext || previewContext.fileId !== file.id || token !== previewRenderToken) return;", html)
-        self.assertIn("if (!body || !isPreviewPlayerCurrent(file, token)) throw new Error(\"stale preview\");", html)
-        self.assertIn("if (!isPreviewPlayerCurrent(file, token)) throw new Error(\"stale preview\");", html)
-
-    def test_grid_video_thumb_uses_ffmpeg_first_paint_with_mediabunny_data(self):
+    def test_grid_video_thumb_uses_ffmpeg_first_paint(self):
         html = dedup.build_browser_html()
         media_start = html.index("function mediaHtml(file)")
         video_start = html.index('if (file.mediaKind === "video")', media_start)
@@ -317,23 +241,18 @@ class BrowserHelperTests(unittest.TestCase):
         self.assertIn('src="${authUrlAttr(`/thumb/${urlId(file.id)}?i=0`)}"', video_html)
         self.assertIn('onerror="fallbackVideoThumb(this)"', video_html)
         self.assertIn('data-video-thumb="1"', video_html)
-        self.assertIn('data-thumb-timestamp="1"', video_html)
+        self.assertNotIn('data-thumb-timestamp', video_html)
 
-    def test_group_video_hover_cycle_sets_ffmpeg_frame_before_mediabunny(self):
+    def test_group_video_hover_cycle_uses_ffmpeg_only(self):
         html = dedup.build_browser_html()
         cycle_start = html.index("function startGroupVideoThumbCycle(groupEl)")
         cycle_end = html.index("function stopGroupVideoThumbCycle(groupEl)", cycle_start)
         cycle_html = html[cycle_start:cycle_end]
 
-        self.assertIn("setVideoThumbTimestamp(img, thumbIndex);", cycle_html)
-        self.assertIn('img.dataset.thumbSource = "ffmpeg";', cycle_html)
         self.assertIn("img.src = ffmpegThumbUrl(img.dataset.fileId, thumbIndex);", cycle_html)
-        self.assertIn("delete img.dataset.thumbLoaded;", cycle_html)
-        self.assertIn("hydrateThumb(img);", cycle_html)
-        self.assertLess(
-            cycle_html.index("img.src = ffmpegThumbUrl(img.dataset.fileId, thumbIndex);"),
-            cycle_html.index("hydrateThumb(img);"),
-        )
+        self.assertNotIn("setVideoThumbTimestamp", cycle_html)
+        self.assertNotIn("hydrateThumb", cycle_html)
+        self.assertNotIn('img.dataset.thumbSource', cycle_html)
 
     def test_stop_group_video_thumb_cycle_resets_and_rehydrates(self):
         html = dedup.build_browser_html()
@@ -345,42 +264,10 @@ class BrowserHelperTests(unittest.TestCase):
         self.assertIn("thumbTimers.delete(groupEl);", stop_html)
         self.assertIn('groupEl.dataset.thumbIndex = "0";', stop_html)
         self.assertIn('img.dataset.thumbIndex = "0";', stop_html)
-        self.assertIn("setVideoThumbTimestamp(img, 0);", stop_html)
+        self.assertNotIn("setVideoThumbTimestamp", stop_html)
         self.assertIn("img.src = ffmpegThumbUrl(img.dataset.fileId, 0);", stop_html)
         self.assertIn("delete img.dataset.prefetched;", stop_html)
-        self.assertIn("delete img.dataset.thumbLoaded;", stop_html)
-        self.assertIn("hydrateThumb(img);", stop_html)
-
-    def test_local_mediabunny_asset_endpoint_is_public_javascript(self):
-        if not os.path.isfile(dedup.MEDIABUNNY_ASSET_PATH):
-            self.skipTest("local mediabunny asset is not present")
-        group = dedup.DuplicateGroup(
-            "abc",
-            (dedup.FileInfo("/tmp/a.txt", 4, 1),),
-        )
-        state = dedup.BrowserSelectionState([group])
-        try:
-            server = ThreadingHTTPServer(("127.0.0.1", 0), dedup.make_browser_handler(state))
-        except PermissionError:
-            self.skipTest("loopback bind not permitted")
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        try:
-            base_url = f"http://127.0.0.1:{server.server_port}"
-            with urllib.request.urlopen(f"{base_url}{dedup.MEDIABUNNY_ASSET_ROUTE}") as response:
-                status = response.status
-                body = response.read(64).decode("utf-8", errors="replace")
-                content_type = response.headers.get("Content-Type", "")
-                nosniff = response.headers.get("X-Content-Type-Options", "")
-
-            self.assertEqual(status, 200)
-            self.assertIn("text/javascript", content_type)
-            self.assertEqual(nosniff, "nosniff")
-            self.assertIn("Copyright", body)
-        finally:
-            server.shutdown()
-            server.server_close()
-            thread.join(timeout=2)
+        self.assertNotIn("hydrateThumb", stop_html)
 
     def test_meta_endpoint_returns_audio_duration(self):
         group = dedup.DuplicateGroup(
@@ -616,11 +503,10 @@ class BrowserHelperTests(unittest.TestCase):
         self.assertIn('data-video-thumb="1" data-pane-video-thumb="1"', html)
         self.assertIn('onerror="fallbackVideoThumb(this)" data-video-thumb="1"', html)
         self.assertIn("startPaneVideoCycle(file);", html)
-        self.assertIn("setVideoThumbTimestamp(img, index);", html)
-        self.assertIn("hydrateThumb(img);", html)
+        self.assertNotIn("setVideoThumbTimestamp", html)
+        self.assertIn("img.src = ffmpegThumbUrl(file.id, index);", html)
+        self.assertNotIn("hydrateThumb", html)
         self.assertIn("await hydrateVideoFile(file);", html)
-        self.assertIn('payload = { ...(file.videoMetadata || { mediaKind: "video" }) };', html)
-        self.assertIn('for (const k of ["audioCodec", "sampleRate", "channels", "bitrate"])', html)
 
         play_start = html.index("function startPaneVideo(file)")
         play_stop = html.index("stopPaneVideoCycle();", play_start)
@@ -633,7 +519,7 @@ class BrowserHelperTests(unittest.TestCase):
         self.assertLess(render_stop, render_video)
         render_end = html.index('file.mediaKind === "audio"', render_start)
         pane_video_html = html[render_video:render_end]
-        self.assertIn('authUrlAttr(`/thumb/${urlId(file.id)}?i=0`)', pane_video_html)
+        self.assertIn('src="${authUrlAttr(`/thumb/${urlId(file.id)}?i=0`)}"', pane_video_html)
 
     def test_empty_dirs_html_posts_effective_selection(self):
         html = dedup.build_empty_dirs_html()

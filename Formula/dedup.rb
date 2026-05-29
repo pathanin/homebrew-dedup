@@ -19,7 +19,6 @@ class Dedup < Formula
     venv.pip_install resource("send2trash")
 
     libexec.install "dedup.py"
-    libexec.install "assets"
 
     (bin/"dedup").write <<~EOS
       #!/bin/bash
@@ -29,7 +28,6 @@ class Dedup < Formula
 
   test do
     system libexec/"bin/python", "-c", "import send2trash"
-    assert_path_exists libexec/"assets/mediabunny-1.45.4.cjs"
     system bin/"dedup", "--help"
     system bin/"dedup", "--smoke-test-browser"
   end
