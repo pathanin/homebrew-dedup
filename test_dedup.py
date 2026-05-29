@@ -1367,7 +1367,6 @@ class JsonCacheTests(unittest.TestCase):
             (dedup.FileInfo("/tmp/photo.jpg", 4, 1),),
         )
         state = dedup.BrowserSelectionState([group])
-        # _groups_json must be bytes containing valid JSON with the required fields.
         parsed = json.loads(state._groups_json.decode("utf-8"))
         self.assertIsInstance(parsed["groups"], list)
         self.assertFalse(parsed["requireMoveConfirmation"])
@@ -1718,7 +1717,6 @@ class CloudPlaceholderTests(unittest.TestCase):
             self.assertFalse(dedup._is_cloud_placeholder(s))
 
     def test_other_flags_not_triggered(self):
-        # A flag that isn't SF_DATALESS must not cause a false positive.
         s = self._stat_with_flags(0x00000100)
         with mock.patch.object(dedup, "CURRENT_OS", dedup.OS_MACOS):
             self.assertFalse(dedup._is_cloud_placeholder(s))
@@ -1789,14 +1787,12 @@ class HardlinkDetectionTests(unittest.TestCase):
 
 class SendToTrashStartupTests(unittest.TestCase):
     def test_missing_send2trash_aborts_before_scan(self):
-        # ImportError must be caught immediately; scan must never start.
         with mock.patch("dedup.load_send_to_trash", side_effect=ImportError):
             with tempfile.TemporaryDirectory() as d:
                 result = dedup.find_and_process_duplicates([d])
         self.assertEqual(result, 1)
 
     def test_dry_run_skips_send2trash_check(self):
-        # --dry-run never moves files so the import check must be skipped entirely.
         with mock.patch("dedup.load_send_to_trash", side_effect=ImportError):
             with tempfile.TemporaryDirectory() as d:
                 result = dedup.find_and_process_duplicates(["--dry-run", d])
