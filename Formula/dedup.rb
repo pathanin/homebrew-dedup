@@ -29,5 +29,6 @@ class Dedup < Formula
   test do
     system libexec/"bin/python", "-c", "import send2trash"
     system bin/"dedup", "--help"
+    system bin/"dedup", "--smoke-test-browser"
   end
 end

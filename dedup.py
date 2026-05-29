@@ -16,9 +16,10 @@ import subprocess
 import stat
 import threading
 import urllib.parse
+import urllib.request
 import webbrowser
 from math import ceil
-from collections import defaultdict, OrderedDict
+from collections import Counter, defaultdict, OrderedDict
 from dataclasses import dataclass, field
 from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -92,12 +93,12 @@ PHOTOS_LIBRARY_SUFFIXES = (".photoslibrary",)
 FFMPEG_PATH = shutil.which("ffmpeg")
 FFPROBE_PATH = shutil.which("ffprobe")
 EXIFTOOL_PATH = shutil.which("exiftool")
-# mediabunny (browser WebCodecs) is the primary engine for video thumbnails and
-# metadata; ffmpeg/ffprobe stay as the server-side fallback. Must be loaded from a
-# URL that serves a JS MIME type — unpkg's .cjs does; jsDelivr's .cjs is served as
-# application/node and the browser refuses it. Empty string => mediabunny disabled
-# (ffmpeg-only). The bundle exposes a global `Mediabunny`.
-MEDIABUNNY_SRC = "https://unpkg.com/mediabunny@1.45.4/dist/bundles/mediabunny.cjs"
+# Optional browser WebCodecs helper for video thumbnails and metadata. It is
+# disabled by default so a local duplicate-review session never depends on, or
+# leaks file-access timing to, a public CDN. Set DEDUP_MEDIABUNNY_SRC to a local
+# or trusted JS bundle URL to enable it; ffmpeg/ffprobe remain the offline
+# server-side fallback.
+MEDIABUNNY_SRC = os.environ.get("DEDUP_MEDIABUNNY_SRC", "").strip()
 
 
 def mediabunny_script_tag(src):
@@ -180,6 +181,10 @@ class ScanStats:
     size_candidates: int = 0
     duplicate_groups: int = 0
     duplicate_files: int = 0
+    unreadable_paths: list = field(default_factory=list)
+    cloud_skipped_paths: list = field(default_factory=list)
+    ignored_dir_counts: Counter = field(default_factory=Counter)
+    ignored_hidden_count: int = 0
 
     def print_summary(self, result=None):
         print("\nSummary")
@@ -189,10 +194,26 @@ class ScanStats:
         print(f"Ignored entries:   {self.ignored}")
         if self.unreadable:
             print(f"WARNING: {self.unreadable} unreadable file(s) skipped — check file permissions.")
+            for path in self.unreadable_paths[:10]:
+                print(f"  unreadable: {path}")
+            if self.unreadable > len(self.unreadable_paths[:10]):
+                print(f"  ... and {self.unreadable - len(self.unreadable_paths[:10])} more")
         else:
             print(f"Unreadable entries: 0")
         if self.cloud_skipped:
             print(f"Cloud placeholders skipped: {self.cloud_skipped} (iCloud files not yet downloaded locally)")
+            for path in self.cloud_skipped_paths[:10]:
+                print(f"  cloud placeholder: {path}")
+            if self.cloud_skipped > len(self.cloud_skipped_paths[:10]):
+                print(f"  ... and {self.cloud_skipped - len(self.cloud_skipped_paths[:10])} more")
+        if self.ignored_dir_counts:
+            common_dirs = ", ".join(
+                f"{name} ({count})"
+                for name, count in self.ignored_dir_counts.most_common(8)
+            )
+            print(f"Ignored directories by name: {common_dirs}")
+        if self.ignored_hidden_count:
+            print(f"Hidden entries skipped: {self.ignored_hidden_count} (use --include-hidden to scan them)")
         print(f"Size candidates:   {self.size_candidates}")
         print(f"Duplicate groups:  {self.duplicate_groups}")
         print(f"Duplicate files:   {self.duplicate_files}")
@@ -219,8 +240,7 @@ class TrashResult:
 
 
 class VolumeHasNoTrashError(Exception):
-    """Raised when send2trash, /usr/bin/trash, and on-volume NAS recycle
-    folders are all unavailable for a /Volumes/ path.
+    """Raised when a path cannot be moved through a recoverable trash route.
 
     The caller decides what to do: prompt for permanent deletion (default
     interactive behavior), permanently delete unconditionally
@@ -762,18 +782,27 @@ def finish_progress():
 
 
 _SF_DATALESS = 0x40000000  # BSD stat flag set on macOS 10.15+ iCloud Drive evicted files
+_FILE_ATTRIBUTE_RECALL_ON_OPEN = 0x00040000
+_FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS = 0x00400000
 
 
-def _is_cloud_placeholder(file_stat):
+def _is_cloud_placeholder(file_stat, path=None):
     """Return True if the file is a cloud-storage placeholder with no local bytes.
 
     On macOS, iCloud Drive marks evicted (cloud-only) files with the SF_DATALESS
     BSD flag.  Reading such a file would trigger a silent background download;
     skipping them prevents unexpected gigabytes of iCloud sync during a scan.
     The file is counted in stats.cloud_skipped so users know why it is absent.
+
+    On Windows, cloud providers commonly expose recall-on-open/data-access file
+    attributes for cloud-only files.  Treat those as placeholders for the same
+    reason: a hash read may hydrate large remote content unexpectedly.
     """
     if CURRENT_OS == OS_MACOS:
         return bool(getattr(file_stat, "st_flags", 0) & _SF_DATALESS)
+    if CURRENT_OS == OS_WINDOWS:
+        attrs = getattr(file_stat, "st_file_attributes", 0)
+        return bool(attrs & (_FILE_ATTRIBUTE_RECALL_ON_OPEN | _FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS))
     return False
 
 
@@ -794,6 +823,10 @@ def scan_by_size(options, stats):
         for dirname in dirnames:
             entries_seen += 1
             if should_ignore_entry(dirname, True, options):
+                if not options.include_hidden and dirname.startswith("."):
+                    stats.ignored_hidden_count += 1
+                else:
+                    stats.ignored_dir_counts[dirname] += 1
                 stats.ignored += 1
             else:
                 kept_dirs.append(dirname)
@@ -802,6 +835,8 @@ def scan_by_size(options, stats):
         for filename in filenames:
             entries_seen += 1
             if should_ignore_entry(filename, False, options):
+                if not options.include_hidden and filename.startswith("."):
+                    stats.ignored_hidden_count += 1
                 stats.ignored += 1
                 continue
             path = os.path.join(current_dir, filename)
@@ -809,12 +844,16 @@ def scan_by_size(options, stats):
                 file_stat = os.stat(path, follow_symlinks=False)
             except OSError:
                 stats.unreadable += 1
+                if len(stats.unreadable_paths) < 50:
+                    stats.unreadable_paths.append(path)
                 continue
             if not stat.S_ISREG(file_stat.st_mode):
                 stats.ignored += 1
                 continue
-            if _is_cloud_placeholder(file_stat):
+            if _is_cloud_placeholder(file_stat, path):
                 stats.cloud_skipped += 1
+                if len(stats.cloud_skipped_paths) < 50:
+                    stats.cloud_skipped_paths.append(path)
                 stats.ignored += 1
                 continue
 
@@ -882,6 +921,8 @@ def find_duplicates(options):
             fingerprint_groups[(info.size, hash_name, fingerprint)].append(info)
         else:
             stats.unreadable += 1
+            if len(stats.unreadable_paths) < 50:
+                stats.unreadable_paths.append(info.path)
         if done == total or done % options.progress_every == 0:
             print_progress("sparse hash", done, total)
     finish_progress()
@@ -920,6 +961,8 @@ def find_duplicates(options):
             full_hash_groups[(info.size, full_hash)].append(info)
         else:
             stats.unreadable += 1
+            if len(stats.unreadable_paths) < 50:
+                stats.unreadable_paths.append(info.path)
         if done == total or done % options.progress_every == 0:
             print_progress("full hash", done, total)
     finish_progress()
@@ -993,6 +1036,7 @@ def build_browser_payload(duplicate_groups):
             extension = os.path.splitext(info.path or "")[1].lower()
             preview_kind = media_kind or ("pdf" if extension in PDF_EXTENSIONS else "text" if extension in TEXT_EXTENSIONS else None)
             is_hardlink = bool(hardlink_inodes and (info.st_dev, info.st_ino) in hardlink_inodes)
+            default_trash = info.path != original.path and not is_hardlink
             group_files.append({
                 "id": file_id,
                 "path": info.path,
@@ -1006,9 +1050,9 @@ def build_browser_payload(duplicate_groups):
                 "thumbnailCount": 1,
                 "isOriginalGuess": info.path == original.path,
                 "isHardlink": is_hardlink,
-                "selectionReason": "original guess" if info.path == original.path else "auto-marked copy",
+                "selectionReason": "hardlink path" if is_hardlink else "original guess" if info.path == original.path else "auto-marked copy",
                 "originalReason": describe_original_reason(info, group.files, original),
-                "defaultTrash": info.path != original.path,
+                "defaultTrash": default_trash,
             })
         groups.append({
             "id": group.hash or str(group_idx),
@@ -1109,8 +1153,13 @@ button:hover:not(:disabled) { opacity: .8; }
 """
 
 _SHARED_JS = """\
+const DEDUP_SESSION_TOKEN = new URLSearchParams(window.location.search).get("token") || "";
 function esc(value) { return String(value).replace(/[&<>"']/g, (ch) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])); }
-function urlId(value) { return encodeURIComponent(String(value)); }\
+function urlId(value) { return encodeURIComponent(String(value)); }
+function authUrl(path) {
+  if (!DEDUP_SESSION_TOKEN) return path;
+  return path + (path.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(DEDUP_SESSION_TOKEN);
+}\
 """
 
 
@@ -1950,7 +1999,7 @@ async function mbVideoTrack(fileId) {
     }
     mbInputs.set(fileId, (async () => {
       const { Input, UrlSource, ALL_FORMATS } = window.Mediabunny;
-      const input = new Input({ formats: ALL_FORMATS, source: new UrlSource(`/media/${urlId(fileId)}`) });
+      const input = new Input({ formats: ALL_FORMATS, source: new UrlSource(authUrl(`/media/${urlId(fileId)}`)) });
       const track = await input.getPrimaryVideoTrack();
       if (!track) throw new Error("no video track");
       const canDecode = await track.canDecode();
@@ -2024,7 +2073,7 @@ async function mbVideoMetadata(file) {
   return payload;
 }
 function ffmpegThumbUrl(fileId, thumbIndex) {
-  return `/thumb/${urlId(fileId)}?i=${thumbIndex}`;
+  return authUrl(`/thumb/${urlId(fileId)}?i=${thumbIndex}`);
 }
 function videoThumbnailCount(duration) {
   duration = Number(duration || 0);
@@ -2089,7 +2138,7 @@ function applyVideoMetadata(file, payload, source) {
   return normalized;
 }
 async function fetchServerMetadata(file) {
-  const response = await fetch(`/meta/${urlId(file.id)}`);
+  const response = await fetch(authUrl(`/meta/${urlId(file.id)}`));
   if (!response.ok) throw new Error("metadata failed");
   return response.json();
 }
@@ -2348,7 +2397,7 @@ function startPaneVideo(file) {
   video.controls = true;
   video.autoplay = true;
   video.style.cssText = "max-width:100%;max-height:100%;object-fit:contain;display:block";
-  video.src = `/media/${urlId(file.id)}`;
+  video.src = authUrl(`/media/${urlId(file.id)}`);
   area.appendChild(video);
 }
 function stopPaneVideoCycle() {
@@ -2392,7 +2441,7 @@ async function startPaneVideoCycle(file) {
 }
 async function hydratePaneText(fileId, node) {
   try {
-    const response = await fetch(`/text/${urlId(fileId)}`);
+    const response = await fetch(authUrl(`/text/${urlId(fileId)}`));
     if (!response.ok) throw new Error("unavailable");
     const payload = await response.json();
     if (node.isConnected && node.dataset.paneText === fileId)
@@ -2403,7 +2452,7 @@ const reprDimsCache = new Map();
 async function loadReprDims(file) {
   if (reprDimsCache.has(file.id)) return reprDimsCache.get(file.id);
   try {
-    const resp = await fetch(`/meta/${urlId(file.id)}`);
+    const resp = await fetch(authUrl(`/meta/${urlId(file.id)}`));
     if (!resp.ok) return null;
     const payload = await resp.json();
     if (!payload.width) return null;
@@ -2428,8 +2477,8 @@ function applyPaneImageQuality() {
   if (!img || !img.isConnected) return;
   const useOriginal = w / dims.width >= 0.5;
   const isOriginal = !img.src.includes("/thumb/");
-  if (useOriginal && !isOriginal) img.src = `/media/${urlId(repr.id)}`;
-  else if (!useOriginal && isOriginal) img.src = `/thumb/${urlId(repr.id)}`;
+  if (useOriginal && !isOriginal) img.src = authUrl(`/media/${urlId(repr.id)}`);
+  else if (!useOriginal && isOriginal) img.src = authUrl(`/thumb/${urlId(repr.id)}`);
 }
 async function maybeSwitchToOriginal(file) {
   const token = ++paneImageToken;
@@ -2446,16 +2495,16 @@ function renderPanePreview(file) {
   const oldIframe = area.querySelector("iframe");
   if (oldIframe) oldIframe.src = "";
   if (file.mediaKind === "image") {
-    area.innerHTML = `<img src="/thumb/${urlId(file.id)}" onerror="this.onerror=null;this.src='/media/${urlId(file.id)}'" alt="">`;
+    area.innerHTML = `<img src="${authUrl(`/thumb/${urlId(file.id)}`)}" onerror="this.onerror=null;this.src='${authUrl(`/media/${urlId(file.id)}`)}'" alt="">`;
     maybeSwitchToOriginal(file);
   } else if (file.mediaKind === "video") {
-    area.innerHTML = `<img src="/thumb/${urlId(file.id)}?i=0" onerror="fallbackVideoThumb(this)" data-video-thumb="1" data-pane-video-thumb="1" data-file-id="${esc(file.id)}" data-file-name="${esc(file.name)}" data-thumb-index="0" data-thumb-count="1" data-thumb-timestamp="1" alt=""><button class="pane-play-btn" title="Play video">&#9654;</button>`;
+    area.innerHTML = `<img src="${authUrl(`/thumb/${urlId(file.id)}?i=0`)}" onerror="fallbackVideoThumb(this)" data-video-thumb="1" data-pane-video-thumb="1" data-file-id="${esc(file.id)}" data-file-name="${esc(file.name)}" data-thumb-index="0" data-thumb-count="1" data-thumb-timestamp="1" alt=""><button class="pane-play-btn" title="Play video">&#9654;</button>`;
     area.querySelector(".pane-play-btn").addEventListener("click", () => startPaneVideo(file));
     startPaneVideoCycle(file);
   } else if (file.mediaKind === "audio") {
-    area.innerHTML = `<div class="pane-audio-placeholder"><div class="pane-audio-icon">&#9835;</div><audio class="pane-audio-player" controls src="/media/${urlId(file.id)}"></audio></div>`;
+    area.innerHTML = `<div class="pane-audio-placeholder"><div class="pane-audio-icon">&#9835;</div><audio class="pane-audio-player" controls src="${authUrl(`/media/${urlId(file.id)}`)}"></audio></div>`;
   } else if (file.previewKind === "pdf") {
-    area.innerHTML = `<iframe src="/pdf/${urlId(file.id)}#page=1&toolbar=0&navpanes=0" title="PDF preview"></iframe>`;
+    area.innerHTML = `<iframe src="${authUrl(`/pdf/${urlId(file.id)}`)}#page=1&toolbar=0&navpanes=0" title="PDF preview"></iframe>`;
   } else if (file.previewKind === "text") {
     area.innerHTML = `<pre style="width:100%;height:100%;padding:10px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;font:11px/1.4 ui-monospace,monospace;margin:0;background:var(--surface);color:var(--text)" data-pane-text="${esc(file.id)}">Loading...</pre>`;
     hydratePaneText(file.id, area.querySelector("[data-pane-text]"));
@@ -2544,19 +2593,19 @@ function renderPane() {
   if (metaFile) renderPaneMeta(metaFile);
 }
 function mediaHtml(file) {
-  if (file.mediaKind === "image") return `<img loading="lazy" src="/thumb/${urlId(file.id)}" onerror="this.onerror=null;this.src='/media/${urlId(file.id)}'" alt="">`;
+  if (file.mediaKind === "image") return `<img loading="lazy" src="${authUrl(`/thumb/${urlId(file.id)}`)}" onerror="this.onerror=null;this.src='${authUrl(`/media/${urlId(file.id)}`)}'" alt="">`;
   if (file.mediaKind === "video") {
     const count = Math.max(1, Number(file.thumbnailCount || 1));
     return `<img loading="lazy" onerror="fallbackVideoThumb(this)" data-video-thumb="1" data-file-id="${esc(file.id)}" data-file-name="${esc(file.name)}" data-video-order="${file.defaultSortIndex || 0}" data-thumb-index="0" data-thumb-count="${count}" data-thumb-timestamp="1" alt="">`;
   }
-  if (file.previewKind === "pdf") return `<iframe loading="lazy" src="/pdf/${urlId(file.id)}#page=1&toolbar=0&navpanes=0" title="PDF preview for ${esc(file.name)}"></iframe>`;
+  if (file.previewKind === "pdf") return `<iframe loading="lazy" src="${authUrl(`/pdf/${urlId(file.id)}`)}#page=1&toolbar=0&navpanes=0" title="PDF preview for ${esc(file.name)}"></iframe>`;
   if (file.previewKind === "text") return `<pre class="text-preview" data-text-id="${esc(file.id)}">Loading...</pre>`;
   return `<span>${esc(file.name)}</span>`;
 }
 function previewHtml(file) {
-  if (file.mediaKind === "image") return `<img src="/media/${urlId(file.id)}" alt="">`;
-  if (file.mediaKind === "video") return `<video controls autoplay muted playsinline src="/media/${urlId(file.id)}"></video>`;
-  if (file.previewKind === "pdf") return `<div style="padding:32px;text-align:center;color:var(--muted);font-size:13px;display:flex;flex-direction:column;align-items:center;gap:12px"><p style="margin:0">PDF preview available in the side panel.</p><a href="/pdf/${urlId(file.id)}" target="_blank" style="color:var(--text);font-weight:600">↗ Open PDF in new tab</a></div>`;
+  if (file.mediaKind === "image") return `<img src="${authUrl(`/media/${urlId(file.id)}`)}" alt="">`;
+  if (file.mediaKind === "video") return `<video controls autoplay muted playsinline src="${authUrl(`/media/${urlId(file.id)}`)}"></video>`;
+  if (file.previewKind === "pdf") return `<div style="padding:32px;text-align:center;color:var(--muted);font-size:13px;display:flex;flex-direction:column;align-items:center;gap:12px"><p style="margin:0">PDF preview available in the side panel.</p><a href="${authUrl(`/pdf/${urlId(file.id)}`)}" target="_blank" style="color:var(--text);font-weight:600">↗ Open PDF in new tab</a></div>`;
   if (file.previewKind === "text") return `<pre data-preview-text="${esc(file.id)}">Loading...</pre>`;
   return `<p>${esc(file.name)}</p>`;
 }
@@ -2923,7 +2972,7 @@ function renderPreview(fileId) {
 }
 async function hydratePreviewText(fileId, token, textNode) {
   try {
-    const response = await fetch(`/text/${urlId(fileId)}`);
+    const response = await fetch(authUrl(`/text/${urlId(fileId)}`));
     if (!response.ok) throw new Error("Preview unavailable");
     const payload = await response.json();
     if (!previewContext || previewContext.fileId !== fileId || token !== previewRenderToken) return;
@@ -2960,7 +3009,7 @@ async function hydrateTextPreviews(root) {
   await Promise.all(nodes.map(async (node) => {
     node.dataset.loaded = "1";
     try {
-      const response = await fetch(`/text/${urlId(node.dataset.textId)}`);
+      const response = await fetch(authUrl(`/text/${urlId(node.dataset.textId)}`));
       if (!response.ok) throw new Error("Preview unavailable");
       const payload = await response.json();
       node.textContent = typeof payload.text === "string" ? payload.text : "Preview unavailable";
@@ -2981,7 +3030,7 @@ async function revealFile(fileId, button) {
   button.disabled = true;
   button.textContent = "Opening...";
   try {
-    const response = await fetch(`/reveal/${urlId(fileId)}`);
+    const response = await fetch(authUrl(`/reveal/${urlId(fileId)}`));
     if (!response.ok) throw new Error("Reveal failed");
     button.textContent = "Opened";
     setTimeout(() => { button.disabled = false; button.textContent = originalText; }, 1200);
@@ -3237,7 +3286,7 @@ async function submitSelection(cancelled) {
     confirmMoveButton.textContent = "Moving...";
   }
   try {
-    const response = await fetch("/api/selection", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({cancelled, trashIds: Array.from(trash)}) });
+    const response = await fetch(authUrl("/api/selection"), { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({cancelled, trashIds: Array.from(trash)}) });
     if (response.status === 409) throw new Error("This session was already submitted from another tab. Close this tab.");
     if (!response.ok) throw new Error("Server error");
     document.body.innerHTML = `<main style="display:flex;align-items:center;justify-content:center;height:100vh;text-align:center;"><div><h1>${cancelled ? "Cancelled" : "Done"}</h1><p>Returning to terminal...</p><button onclick="window.close()">Close Window</button></div></main>`;
@@ -3278,7 +3327,7 @@ async function init() {
       let attempts = 0;
       while (true) {
         try {
-          const res = await fetch(`/api/groups?offset=${offset}&limit=${limit}`);
+          const res = await fetch(authUrl(`/api/groups?offset=${offset}&limit=${limit}`));
           if (!res.ok) throw new Error("Failed to load groups");
           payload = await res.json();
           break;
@@ -3543,8 +3592,19 @@ class _BaseHandler(BaseHTTPRequestHandler):
 
 def make_browser_handler(state):
     class BrowserSelectionHandler(_BaseHandler):
+        def is_authorized(self, parsed):
+            query = urllib.parse.parse_qs(parsed.query)
+            token = query.get("token", [""])[0] or self.headers.get("X-Dedup-Session", "")
+            return bool(token) and token == state.session_id
+
+        def reject_unauthorized(self):
+            self.send_json({"ok": False, "reason": "unauthorized"}, 403)
+
         def do_GET(self):
             parsed = urllib.parse.urlparse(self.path)
+            if not self.is_authorized(parsed):
+                self.reject_unauthorized()
+                return
             if parsed.path == "/":
                 self.send_bytes(200, build_browser_html().encode("utf-8"), "text/html; charset=utf-8")
             elif parsed.path == "/api/groups":
@@ -3592,19 +3652,22 @@ def make_browser_handler(state):
 
         def do_POST(self):
             parsed = urllib.parse.urlparse(self.path)
+            if not self.is_authorized(parsed):
+                self.reject_unauthorized()
+                return
             if parsed.path != "/api/selection":
                 self.send_error(404)
+                return
+            payload, ok = self.read_json_body()
+            if not ok:
                 return
             with state.cache_lock:
                 if state._submitted:
                     self.send_json({"ok": False, "reason": "already-submitted"}, 409)
                     return
+                state.selected_paths = [] if payload.get("cancelled") else sanitize_browser_trash_selection(state.groups, payload.get("trashIds", []))
                 state._submitted = True
-            payload, ok = self.read_json_body()
-            if not ok:
-                return
-            state.selected_paths = [] if payload.get("cancelled") else sanitize_browser_trash_selection(state.groups, payload.get("trashIds", []))
-            state.done.set()
+                state.done.set()
             self.send_json({"ok": True, "selected": len(state.selected_paths)})
 
         def reveal_file(self, file_id):
@@ -3735,7 +3798,9 @@ def _bind_server(handler, port):
 
 def _run_browser_session(state, handler_factory, url_label, cleanup=None, port=7979):
     server = _bind_server(handler_factory(state), port)
-    url = f"http://127.0.0.1:{server.server_port}/"
+    token = getattr(state, "session_id", "")
+    query = f"?token={urllib.parse.quote(token)}" if token else ""
+    url = f"http://127.0.0.1:{server.server_port}/{query}"
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
     print(f"\n{url_label}")
@@ -3769,6 +3834,36 @@ def select_files_in_browser(duplicate_groups, require_move_confirmation=False, p
             state.thumbnail_inflight.clear()
         get_video_duration.cache_clear()
     return _run_browser_session(state, make_browser_handler, "Browser review UI", cleanup=cleanup, port=port)
+
+
+def smoke_test_browser_server():
+    group = DuplicateGroup(
+        "smoke",
+        (
+            FileInfo("/tmp/dedup-smoke-a.txt", 1, 1),
+            FileInfo("/tmp/dedup-smoke-b.txt", 1, 2),
+        ),
+        FULL_HASH_NAME,
+    )
+    state = BrowserSelectionState([group])
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_browser_handler(state))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = (
+            f"http://127.0.0.1:{server.server_port}/api/groups"
+            f"?offset=0&limit=1&token={urllib.parse.quote(state.session_id)}"
+        )
+        with urllib.request.urlopen(url, timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        if payload.get("totalGroupCount") != 1:
+            raise RuntimeError("browser smoke test returned unexpected payload")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+    print("Browser server smoke test passed.")
+    return 0
 
 
 def build_empty_dirs_html():
@@ -3849,7 +3944,7 @@ let dirs = [];
 let selected = new Set(); // Set<path string>
 
 async function init() {
-  const res = await fetch('/api/empty-dirs');
+  const res = await fetch(authUrl('/api/empty-dirs'));
   const data = await res.json();
   dirs = data.dirs || [];
   document.getElementById('subtitle').textContent =
@@ -4001,7 +4096,7 @@ function showDone(label) {
 async function doConfirm() {
   document.querySelectorAll('button').forEach(b => b.disabled = true);
   closeConfirm();
-  await fetch('/api/empty-dirs-selection', {
+  await fetch(authUrl('/api/empty-dirs-selection'), {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({selected: effectiveSelection()}),
@@ -4010,7 +4105,7 @@ async function doConfirm() {
 }
 
 async function cancel() {
-  await fetch('/api/empty-dirs-selection', {
+  await fetch(authUrl('/api/empty-dirs-selection'), {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({cancelled: true}),
@@ -4027,6 +4122,7 @@ init();
 class EmptyDirSelectionState:
     def __init__(self, dirs):
         self.dirs = dirs
+        self.session_id = os.urandom(16).hex()
         self.selected_paths = []
         self.done = threading.Event()
 
@@ -4035,8 +4131,19 @@ def make_empty_dir_handler(state):
     dirs_set = set(state.dirs)
 
     class EmptyDirHandler(_BaseHandler):
+        def is_authorized(self, parsed):
+            query = urllib.parse.parse_qs(parsed.query)
+            token = query.get("token", [""])[0] or self.headers.get("X-Dedup-Session", "")
+            return bool(token) and token == state.session_id
+
+        def reject_unauthorized(self):
+            self.send_json({"ok": False, "reason": "unauthorized"}, 403)
+
         def do_GET(self):
             parsed = urllib.parse.urlparse(self.path)
+            if not self.is_authorized(parsed):
+                self.reject_unauthorized()
+                return
             if parsed.path == "/":
                 self.send_bytes(200, build_empty_dirs_html().encode("utf-8"), "text/html; charset=utf-8")
             elif parsed.path == "/api/empty-dirs":
@@ -4046,6 +4153,9 @@ def make_empty_dir_handler(state):
 
         def do_POST(self):
             parsed = urllib.parse.urlparse(self.path)
+            if not self.is_authorized(parsed):
+                self.reject_unauthorized()
+                return
             if parsed.path != "/api/empty-dirs-selection":
                 self.send_error(404)
                 return
@@ -4073,8 +4183,173 @@ def build_expected_hashes(groups):
     expected = {}
     for group in groups:
         for info in group.files:
-            expected[info.path] = (info.size, info.mtime_ns, group.hash, group.hash_name)
+            expected[info.path] = (info, group)
     return expected
+
+
+def exact_hash_paths_for_selection(files, groups):
+    selected = set(files)
+    expected = build_expected_hashes(groups)
+    needed = set()
+    for path in selected:
+        entry = expected.get(path)
+        if not entry:
+            continue
+        _info, group = entry
+        if group.hash_name == FULL_HASH_NAME:
+            continue
+        needed.add(path)
+        for peer in group.files:
+            if peer.path not in selected:
+                needed.add(peer.path)
+    return needed
+
+
+class FullHashPreloader:
+    """Opportunistically full-hash fast-mode candidates during browser review."""
+
+    def __init__(self, groups):
+        self.pending = OrderedDict()
+        for group in groups:
+            if group.hash_name == FULL_HASH_NAME:
+                continue
+            for info in group.files:
+                self.pending.setdefault(info.path, None)
+        self.cache = {}
+        self.failed = set()
+        self.in_flight = set()
+        self.allowed_paths = None
+        self.stop_all = False
+        self.condition = threading.Condition()
+        self.thread = None
+
+    def _compute_full_hash_entry(self, path):
+        try:
+            before = os.stat(path, follow_symlinks=False)
+        except OSError:
+            return None
+        if not stat.S_ISREG(before.st_mode) or _is_cloud_placeholder(before, path):
+            return None
+        if self._should_abort_path(path):
+            return None
+        hasher = make_hasher(FULL_HASH_NAME)
+        try:
+            with open(path, "rb") as file_obj:
+                while True:
+                    if self._should_abort_path(path):
+                        return None
+                    chunk = file_obj.read(FULL_HASH_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    hasher.update(chunk)
+        except OSError:
+            return None
+        try:
+            after = os.stat(path, follow_symlinks=False)
+        except OSError:
+            return None
+        if (
+            before.st_size != after.st_size
+            or before.st_mtime_ns != after.st_mtime_ns
+            or not stat.S_ISREG(after.st_mode)
+            or _is_cloud_placeholder(after, path)
+            or self._should_abort_path(path)
+        ):
+            return None
+        return before.st_size, before.st_mtime_ns, hasher.hexdigest()
+
+    def _entry_digest_if_current(self, path, entry):
+        if not entry:
+            return None
+        expected_size, expected_mtime_ns, digest = entry
+        try:
+            current = os.stat(path, follow_symlinks=False)
+        except OSError:
+            return None
+        if current.st_size != expected_size or current.st_mtime_ns != expected_mtime_ns:
+            return None
+        return digest
+
+    def _should_abort_path(self, path):
+        with self.condition:
+            return self.stop_all or (self.allowed_paths is not None and path not in self.allowed_paths)
+
+    def start(self):
+        if not self.pending or self.thread is not None:
+            return
+        self.thread = threading.Thread(target=self._run, name="dedup-fullhash-preloader", daemon=True)
+        self.thread.start()
+
+    def restrict_to(self, paths):
+        with self.condition:
+            allowed = set(paths)
+            self.allowed_paths = allowed
+            for path in list(self.pending.keys()):
+                if path not in allowed:
+                    self.pending.pop(path, None)
+            self.condition.notify_all()
+
+    def stop(self):
+        with self.condition:
+            self.stop_all = True
+            self.pending.clear()
+            self.condition.notify_all()
+        if self.thread is not None:
+            self.thread.join(timeout=2)
+
+    def _next_path_locked(self):
+        for path in list(self.pending.keys()):
+            if self.allowed_paths is None or path in self.allowed_paths:
+                self.pending.pop(path, None)
+                self.in_flight.add(path)
+                return path
+        return None
+
+    def _run(self):
+        while True:
+            with self.condition:
+                if self.stop_all:
+                    return
+                path = self._next_path_locked()
+                if path is None:
+                    if self.allowed_paths is not None or not self.pending:
+                        return
+                    self.condition.wait(timeout=0.2)
+                    continue
+            entry = self._compute_full_hash_entry(path)
+            with self.condition:
+                if entry:
+                    self.cache[path] = entry
+                else:
+                    self.failed.add(path)
+                self.in_flight.discard(path)
+                self.condition.notify_all()
+
+    def get(self, path):
+        while True:
+            with self.condition:
+                if path in self.cache:
+                    digest = self._entry_digest_if_current(path, self.cache[path])
+                    if digest:
+                        return digest
+                    self.cache.pop(path, None)
+                if path in self.failed:
+                    return None
+                if path in self.in_flight:
+                    self.condition.wait(timeout=0.2)
+                    continue
+                self.pending.pop(path, None)
+                self.in_flight.add(path)
+                break
+        entry = self._compute_full_hash_entry(path)
+        with self.condition:
+            if entry:
+                self.cache[path] = entry
+            else:
+                self.failed.add(path)
+            self.in_flight.discard(path)
+            self.condition.notify_all()
+        return entry[2] if entry else None
 
 
 def revalidate_file(path, expected_size, expected_mtime_ns, expected_hash, expected_hash_name):
@@ -4086,6 +4361,8 @@ def revalidate_file(path, expected_size, expected_mtime_ns, expected_hash, expec
         return False, "not a regular file"
     if file_stat.st_size != expected_size:
         return False, "size changed"
+    if file_stat.st_mtime_ns != expected_mtime_ns:
+        return False, "modified since scan"
     if expected_hash_name == FULL_HASH_NAME:
         current_hash = get_full_content_hash(path)
     else:
@@ -4093,6 +4370,48 @@ def revalidate_file(path, expected_size, expected_mtime_ns, expected_hash, expec
     if current_hash != expected_hash:
         return False, "hash changed"
     return True, ""
+
+
+def _cached_full_hash(path, cache, full_hash_reader=None):
+    if path not in cache:
+        reader = full_hash_reader or get_full_content_hash
+        cache[path] = reader(path)
+    return cache[path]
+
+
+def revalidate_selected_file_exact(path, info, group, selected_paths, full_hash_cache, full_hash_reader=None):
+    valid, reason = revalidate_file(
+        path,
+        info.size,
+        info.mtime_ns,
+        group.hash,
+        group.hash_name,
+    )
+    if not valid:
+        return False, reason
+    if group.hash_name == FULL_HASH_NAME:
+        return True, ""
+
+    selected_hash = _cached_full_hash(path, full_hash_cache, full_hash_reader)
+    if not selected_hash:
+        return False, "full hash unavailable"
+
+    for peer in group.files:
+        if peer.path == path or peer.path in selected_paths:
+            continue
+        peer_valid, _peer_reason = revalidate_file(
+            peer.path,
+            peer.size,
+            peer.mtime_ns,
+            group.hash,
+            group.hash_name,
+        )
+        if not peer_valid:
+            continue
+        peer_hash = _cached_full_hash(peer.path, full_hash_cache, full_hash_reader)
+        if peer_hash and peer_hash == selected_hash:
+            return True, ""
+    return False, "no exact kept duplicate"
 
 
 def load_send_to_trash():
@@ -4126,6 +4445,24 @@ def get_macos_volume_root(path):
     if len(parts) >= 3 and parts[1] == "Volumes":
         return os.sep + os.sep.join(parts[1:3])
     return None
+
+
+def get_volume_root(path):
+    macos_root = get_macos_volume_root(path)
+    if macos_root:
+        return macos_root
+    abs_path = os.path.abspath(path)
+    drive, _tail = os.path.splitdrive(abs_path)
+    if drive:
+        return drive + os.sep
+    current = abs_path if os.path.isdir(abs_path) else os.path.dirname(abs_path)
+    previous = None
+    while current and current != previous:
+        if os.path.ismount(current):
+            return current
+        previous = current
+        current = os.path.dirname(current)
+    return os.path.abspath(os.sep)
 
 
 def find_nas_recycle_root(volume_root):
@@ -4268,7 +4605,13 @@ def move_to_trash_safely(path, send_to_trash):
         return "send2trash"
     except Exception as send_error:
         if not (CURRENT_OS == OS_MACOS and is_macos_external_volume_path(path)):
-            raise
+            volume_root = get_volume_root(path)
+            raise VolumeHasNoTrashError(
+                path,
+                volume_root,
+                send_error,
+                OSError("no platform trash fallback available"),
+            ) from send_error
         try:
             move_to_trash_with_cmd(path)
             return "trash-cmd"
@@ -4299,6 +4642,7 @@ def trash_files(
     allow_slow_local_trash=False,
     interactive=True,
     prompt_func=prompt_permanent_delete,
+    full_hash_preloader=None,
 ):
     """Trash the selected files with NAS-aware fallbacks.
 
@@ -4319,6 +4663,16 @@ def trash_files(
     """
     expected = build_expected_hashes(groups)
     result = TrashResult(selected=len(files), dry_run=dry_run)
+    selected_set = set(files)
+    full_hash_cache = {}
+    if full_hash_preloader is not None:
+        needed_hashes = exact_hash_paths_for_selection(files, groups)
+        full_hash_preloader.restrict_to(needed_hashes)
+        if needed_hashes:
+            print(
+                f"Completing exact verification for {len(needed_hashes)} file(s) "
+                "from the reviewed selection..."
+            )
     send_to_trash = None
     if not dry_run:
         try:
@@ -4334,13 +4688,14 @@ def trash_files(
             print(f"Skipped (not in duplicate set): {path}", file=sys.stderr)
             result.skipped += 1
             continue
-        expected_size, expected_mtime_ns, expected_hash, expected_hash_name = expected[path]
-        valid, reason = revalidate_file(
+        info, group = expected[path]
+        valid, reason = revalidate_selected_file_exact(
             path,
-            expected_size,
-            expected_mtime_ns,
-            expected_hash,
-            expected_hash_name,
+            info,
+            group,
+            selected_set,
+            full_hash_cache,
+            full_hash_preloader.get if full_hash_preloader is not None else None,
         )
         if not valid:
             print(f"Skipped ({reason}): {path}", file=sys.stderr)
@@ -4639,19 +4994,19 @@ def parse_args(argv):
         "--permanent-on-no-trash",
         action="store_true",
         help=(
-            "When a NAS or external volume has no recycle bin, permanently "
-            "delete the selected files instead of prompting (interactive) or "
-            "skipping (non-interactive). Irreversible. Required for permanent "
-            "deletion in --yes mode."
+            "When a path cannot be moved to a recoverable Trash or recycle "
+            "folder, permanently delete the selected files instead of "
+            "prompting (interactive) or skipping (non-interactive). "
+            "Irreversible. Required for permanent deletion in --yes mode."
         ),
     )
     parser.add_argument(
         "--allow-slow-local-trash",
         action="store_true",
         help=(
-            "Allow the last-resort fallback that copies NAS files into local "
-            "~/.Trash across the network when the volume has no recycle bin. "
-            "Slow for large files but keeps them recoverable."
+            "Allow the last-resort fallback that copies files into local "
+            "~/.Trash when the volume has no recycle bin. Slow for large or "
+            "remote files but keeps them recoverable."
         ),
     )
     parser.add_argument(
@@ -4668,6 +5023,11 @@ def parse_args(argv):
         type=int,
         default=7979,
         help="Port for the local browser UI (default: 7979). A fixed port lets the browser remember site permissions across runs.",
+    )
+    parser.add_argument(
+        "--smoke-test-browser",
+        action="store_true",
+        help=argparse.SUPPRESS,
     )
     return parser.parse_args(argv)
 
@@ -4693,6 +5053,9 @@ def build_options(args):
 
 def find_and_process_duplicates(argv=None):
     args = parse_args(argv if argv is not None else sys.argv[1:])
+
+    if args.smoke_test_browser:
+        return smoke_test_browser_server()
 
     # H12: verify send2trash is available before doing any scanning work.
     if not args.dry_run:
@@ -4770,32 +5133,39 @@ def find_and_process_duplicates(argv=None):
         )
 
     dry_run = args.dry_run
-    files_to_trash = select_files_in_browser(
-        duplicate_groups,
-        require_move_confirmation=not dry_run and not args.yes,
-        port=args.port,
-    )
-    print("-" * 60)
-    if not files_to_trash:
-        print("\nScan complete. No files were selected for removal.")
-        stats.print_summary()
-        if args.clean_empty_dirs:
-            return _run_empty_dir_phase(args, options)
-        return 0
+    full_hash_preloader = FullHashPreloader(duplicate_groups)
+    full_hash_preloader.start()
+    try:
+        files_to_trash = select_files_in_browser(
+            duplicate_groups,
+            require_move_confirmation=not dry_run and not args.yes,
+            port=args.port,
+        )
+        print("-" * 60)
+        if not files_to_trash:
+            full_hash_preloader.stop()
+            print("\nScan complete. No files were selected for removal.")
+            stats.print_summary()
+            if args.clean_empty_dirs:
+                return _run_empty_dir_phase(args, options)
+            return 0
 
-    action = "would be moved to the Trash/Recycle Bin" if dry_run else "will be moved to the Trash/Recycle Bin"
-    print(f"\nYou selected {len(files_to_trash)} file(s) that {action}:")
-    for path in sorted(files_to_trash):
-        print(f"  - {path}")
+        action = "would be moved to the Trash/Recycle Bin" if dry_run else "will be moved to the Trash/Recycle Bin"
+        print(f"\nYou selected {len(files_to_trash)} file(s) that {action}:")
+        for path in sorted(files_to_trash):
+            print(f"  - {path}")
 
-    result = trash_files(
-        files_to_trash,
-        duplicate_groups,
-        dry_run=dry_run,
-        permanent_on_no_trash=args.permanent_on_no_trash,
-        allow_slow_local_trash=args.allow_slow_local_trash,
-        interactive=not args.yes,
-    )
+        result = trash_files(
+            files_to_trash,
+            duplicate_groups,
+            dry_run=dry_run,
+            permanent_on_no_trash=args.permanent_on_no_trash,
+            allow_slow_local_trash=args.allow_slow_local_trash,
+            interactive=not args.yes,
+            full_hash_preloader=full_hash_preloader,
+        )
+    finally:
+        full_hash_preloader.stop()
     stats.print_summary(result)
     exit_code = 0 if result.errors == 0 else 1
 
