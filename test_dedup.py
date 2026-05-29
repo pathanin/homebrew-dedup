@@ -1143,6 +1143,50 @@ class TrashSafetyTests(unittest.TestCase):
         self.assertTrue(run_kwargs["capture_output"])
         self.assertTrue(run_kwargs["text"])
 
+    def test_volume_has_no_trash_error_message_platform_neutral(self):
+        send_error = OSError("send2trash is not installed")
+        cmd_error = OSError("no platform trash fallback available")
+        exc = dedup.VolumeHasNoTrashError(
+            "/some/file.txt",
+            "/",
+            send_error,
+            cmd_error,
+        )
+        msg = str(exc)
+        self.assertNotIn("/usr/bin/trash", msg)
+        self.assertIn("send2trash failed", msg)
+        self.assertIn("platform trash fallback failed", msg)
+
+    def test_move_to_local_trash_raises_on_windows(self):
+        with mock.patch.object(dedup, "CURRENT_OS", dedup.OS_WINDOWS):
+            with self.assertRaises(OSError) as ctx:
+                dedup.move_to_local_trash("/some/file.txt")
+            self.assertIn("Windows has no local trash fallback", str(ctx.exception))
+
+    def test_decide_no_trash_strategy_groups_by_volume_root(self):
+        """_decide_no_trash_strategy must use get_volume_root
+        (not get_macos_volume_root) so that files_on_volume is populated
+        on non-macOS platforms."""
+        volume_root = "/mnt/data"
+        all_paths = ["/mnt/data/file.txt", "/other/volume/file.txt"]
+        with mock.patch.object(dedup, "get_volume_root") as mock_get_vol:
+            mock_get_vol.side_effect = lambda p: (
+                "/mnt/data" if p.startswith("/mnt/data") else "/other/volume"
+            )
+            strategy = dedup._decide_no_trash_strategy(
+                volume_root=volume_root,
+                all_paths=all_paths,
+                permanent_on_no_trash=False,
+                allow_slow_local_trash=False,
+                interactive=True,
+                prompt_func=lambda v, files, **kw: (
+                    self.assertIn("/mnt/data/file.txt", files),
+                    self.assertNotIn("/other/volume/file.txt", files),
+                    "skip",
+                )[2],
+            )
+        self.assertEqual(strategy, "skip")
+
 
 class VolumeHelperTests(unittest.TestCase):
     def _make_file(self, volume, *parts):

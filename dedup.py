@@ -229,7 +229,7 @@ class VolumeHasNoTrashError(Exception):
 
     The caller decides what to do: prompt for permanent deletion (default
     interactive behavior), permanently delete unconditionally
-    (``--permanent-on-no-trash``), or copy to local ``~/.Trash``
+    (``--permanent-on-no-trash``), or use the local trash fallback
     (``--allow-slow-local-trash``).
     """
 
@@ -239,7 +239,7 @@ class VolumeHasNoTrashError(Exception):
         self.send_error = send_error
         self.cmd_error = cmd_error
         super().__init__(
-            f"send2trash failed: {send_error}; /usr/bin/trash failed: {cmd_error}"
+            f"send2trash failed: {send_error}; platform trash fallback failed: {cmd_error}"
         )
 
 
@@ -4110,12 +4110,12 @@ def prompt_permanent_delete(
     if allow_slow_local_trash:
         print("Choose how to handle these items:")
         print("  [p] Permanently delete them. This is irreversible (like Finder's 'Delete Immediately').")
-        print("  [l] Move them to local ~/.Trash. This may be slow across the network.")
+        print("  [l] Move them to a local trash fallback directory. This may be slow across the network.")
         print(f"  [s] Skip these {item_label}s.")
         prompt = "Permanently delete, use local trash, or skip? [p/l/S]: "
     else:
         print("Permanently delete them? This is irreversible (like Finder's 'Delete Immediately').")
-        print(f"Decline to skip these {item_label}s — pass --allow-slow-local-trash to copy them to ~/.Trash instead.")
+        print(f"Decline to skip these {item_label}s — pass --allow-slow-local-trash to use the local trash fallback instead.")
         prompt = "Permanently delete? [y/N]: "
     try:
         answer = input_func(prompt).strip().lower()
@@ -4130,9 +4130,15 @@ def prompt_permanent_delete(
 
 def move_to_local_trash(path):
     _ensure_no_symlink_replacement(path)
+    if CURRENT_OS == OS_WINDOWS:
+        raise OSError(
+            "Windows has no local trash fallback directory. "
+            "send2trash uses the Recycle Bin natively; if that failed, "
+            "the volume likely has no Recycle Bin support."
+        )
     trash_dir = os.path.expanduser("~/.Trash")
     if not os.path.isdir(trash_dir):
-        raise OSError("~/.Trash not found")
+        raise OSError("local trash directory ~/.Trash not found")
     name = os.path.basename(path)
     dest = os.path.join(trash_dir, name)
     dest = make_unique_collision_path(dest)
@@ -4504,7 +4510,7 @@ def _decide_no_trash_strategy(
         print(f"Volume {volume_root!r} has no recycle bin; --permanent-on-no-trash is set.")
         return "permanent"
     if interactive:
-        files_on_volume = [p for p in all_paths if get_macos_volume_root(p) == volume_root]
+        files_on_volume = [p for p in all_paths if get_volume_root(p) == volume_root]
         return prompt_func(
             volume_root,
             files_on_volume,
