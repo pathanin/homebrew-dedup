@@ -8,8 +8,12 @@
 ## Goal (locked with the user)
 Make **mediabunny** (browser/WebCodecs) the *primary* engine for video **thumbnails + metadata**,
 with server-side **ffmpeg/ffprobe as fallback**. Motivation: *reduce the ffmpeg dependency* so most
-users never install it. The native `<video>` tag stays the player — **no custom player is being
-built** (formats the browser can't play natively still won't play; that's accepted).
+users never install it. The native `<video>` tag stays the **primary** player.
+
+**Scope update (Phase 6, now next work):** the original "no custom player" line has been lifted — the
+*preview modal* will fall back to a mediabunny canvas + WebAudio player when native `<video>` can't
+play a file (container-blocked formats like MKV/AVI). It does **not** add codecs the platform can't
+decode. Full design is in `MEDIABUNNY_PLAN.md` → Phase 6; this file does not duplicate it.
 
 ## Delivery decision (locked)
 **unpkg CDN**, not vendored. `MEDIABUNNY_SRC = https://unpkg.com/mediabunny@1.45.4/dist/bundles/mediabunny.cjs`.
@@ -108,8 +112,16 @@ Moved video duration/dimensions/codec collection from `/meta/{id}` to mediabunny
     `span.video-fallback`. Rung 2→3 confirmed.
   - mediabunny-on path (`blob:` thumbs + `source: mediabunny`) verified in phases 2–4.
 
-## NEXT
-All planned phases (0–5) are complete. Remaining items are the open decision below.
+## NEXT: Phase 6 — fallback player for browser-unplayable formats
+Phases 0–5 (thumbnails + metadata) are complete. **Next work is Phase 6:** a mediabunny canvas +
+WebAudio player mounted in the preview modal when native `<video>` can't play a file. Full plan,
+APIs, rung logic, lifecycle/teardown rules, and verification matrix are in `MEDIABUNNY_PLAN.md` →
+"Phase 6". Key guardrails to carry in (do not rediscover):
+- Preview-modal path **only**; reuse `/media/{id}` Range; **no server change**.
+- Respect `previewRenderToken` and `audioContext.close()` on teardown (CLAUDE.md invariant; browsers
+  cap AudioContexts ~6).
+- `canDecode()` is the honest ceiling — MKV/AVI win, ProRes/undecodable degrade to static.
+- Reference: <https://mediabunny.dev/examples/media-player/>.
 
 ## How to run / verify
 ```bash
@@ -130,9 +142,11 @@ Phase 4 smoke used the Webwright contract in `/private/tmp/webwright-phase4/` ag
 and no `/meta/` requests before or after side-pane metadata render.
 
 ## Watch out for
-- **`test_popup_port` has 8 PRE-EXISTING failures on `main`** (assert popup-window code in
-  `_SHARED_JS` that isn't present). NOT caused by this work — confirmed by stashing edits. Don't
-  chase them as if Phase 1 broke something. (User aware; left as a separate question.)
+- **`test_popup_port` popup failures are RESOLVED (this session).** They asserted a popup-window
+  feature in `_SHARED_JS` that was intentionally removed in `3923260 Release v0.1.3` (replaced by the
+  side preview pane). The stale `TestSharedJSPopup` class (9 tests) was deleted; the 7 port tests
+  remain and pass. Also dropped the stale "popup permissions" phrase from the `--port` help text
+  (committed `2bf3c14`).
 - `test_dedup.py` / `test_popup_port.py` are **gitignored** — edits won't show in `git diff` or
   ship in the tarball, but they still run locally.
 - `graphify-out/` deletion is already committed separately as `05fa359 Remove generated graphify output`.
@@ -142,4 +156,7 @@ and no `/meta/` requests before or after side-pane metadata render.
   intact. mediabunny is browser-only — adds no Python dep.
 
 ## Open decision left for the user
-Pre-existing `test_popup_port` breakage: investigate/fix separately, or leave?
+- **CDN vs vendored mediabunny bundle** (carried from `MEDIABUNNY_PLAN.md` open items): unpkg CDN
+  keeps the repo one Python file but needs internet (offline → ffmpeg fallback); vendoring the
+  ~1.4 MB bundle is offline-capable + MIME-safe but adds a JS blob and a formula `install` line.
+  Currently on the CDN. (The earlier `test_popup_port` question is resolved — see "Watch out for".)

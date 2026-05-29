@@ -4,9 +4,12 @@
 - **Goal:** *Reduce the ffmpeg dependency.* Do video thumbnail + metadata work in the
   browser via [mediabunny](https://mediabunny.dev) (WebCodecs). ffmpeg/ffprobe become a
   pure fallback, used only when the browser can't decode the codec or mediabunny isn't loaded.
-- **Player:** unchanged — native `<video src="/media/{id}">`. No custom mediabunny player.
-  (Formats the browser's `<video>` can't play natively still won't *play*; that's an accepted
-  limitation of this scope. Thumbnails for them can still come from ffmpeg fallback.)
+- **Player:** native `<video src="/media/{id}">` stays the **primary** player (rung A). Phases 1–5
+  did not build a custom player. **Phase 6 (below) extends the original scope:** when native
+  `<video>` can't play a file, the *preview modal* falls back to a mediabunny canvas + WebAudio
+  player (rung B), then to the static "unavailable" notice (rung C). This is gated by
+  `track.canDecode()` — it recovers *container*-blocked files, not codecs the platform's WebCodecs
+  can't decode. See Phase 6 for the honest scope.
 - **Delivery:** mediabunny loads from CDN via a `<script>` tag, kept **optional**. When it
   can't load (offline, blocked) the code detects `window.Mediabunny` is absent and falls back
   to the existing ffmpeg `/thumb/` + `/meta/` paths. A single `MEDIABUNNY_SRC` constant makes
@@ -169,14 +172,98 @@ metadata render.
     swaps in `span.video-fallback` (filename text). 0 video `<img>` remain, 2 static spans. Rung 2→3
     confirmed.
 
-### Phase 6 — Out of scope (noted, not built)
-Custom mediabunny canvas+WebAudio player for browser-unplayable formats (MKV/AVI/HEVC/ProRes).
-Excluded per the scope decision; revisit only if "play unsupported formats" becomes the goal.
+### Phase 6 — Fallback player for browser-unplayable formats (PLANNED — next work)
+**Goal:** let the *preview modal* **play** files the native `<video>` can't, by decoding them
+in-browser with mediabunny (WebCodecs video + the Web Audio API). Same engine as the
+thumbnail/metadata work, so it stays browser-only — **no new Python dependency and no new server
+route.**
+
+**Honest scope — what this does and does NOT fix.** The win is files where the *container* is the
+blocker but the *codec* is WebCodecs-decodable. `track.canDecode()` is the ceiling; this phase adds
+no codec support the platform lacks.
+- **MKV / AVI** wrapping H.264/H.265/VP9/AV1 + AAC/Opus → native `<video>` often refuses the
+  container, mediabunny demuxes it and `canDecode()` passes → **player works.** Primary target.
+- **HEVC/H.265 .mp4** → platform-dependent (Safari + some hardware Chrome decode, else not).
+  `canDecode()` decides per-machine.
+- **ProRes / uncompressed / exotic codecs** → almost always `canDecode() === false` (not a WebCodecs
+  codec) → **no win; degrades to the static notice.** Do **not** promise "plays anything."
+
+**Three rungs (preview player only — mirrors the thumbnail chain):**
+- **A. native `<video src="/media/{id}">`** — unchanged, cheapest, keeps native controls, hardware
+  audio, and accessibility. Always tried first.
+- **B. mediabunny canvas + WebAudio player** — mounted only when native fails **and** the video
+  track's `canDecode()` is true.
+- **C. static** — existing "preview unavailable" notice, when B can't decode (or non-secure context).
+
+**Detecting native failure (A → B)** — not the `error` event alone:
+- `video.error` set after load → fail.
+- **Stall/timeout:** `readyState` stuck below `HAVE_CURRENT_DATA` after a few seconds, no progress → fail.
+- **Audio-plays-video-frozen:** `videoWidth === 0` while `currentTime` advances → fail.
+Use an `error`-event + timeout combo, then swap the modal body from `<video>` to the canvas player.
+
+**Player construction (B), reusing the Phase 0/2 seam:**
+```js
+const input = new Input({ formats: ALL_FORMATS, source: new UrlSource(`/media/${urlId(id)}`) });
+const videoTrack = await input.getPrimaryVideoTrack();   // may be null
+const audioTrack = await input.getPrimaryAudioTrack();   // may be null
+// if (!videoTrack || !(await videoTrack.canDecode())) → rung C
+const vSink = new CanvasSink(videoTrack, { width, height, fit: 'contain' });
+const aSink = (audioTrack && await audioTrack.canDecode()) ? new AudioBufferSink(audioTrack) : null;
+```
+- **Video:** `vSink.canvases(startT)` async-generates `WrappedCanvas {canvas,timestamp,duration}`
+  (pre-decodes a few ahead). `vSink.getCanvas(t)` paints an immediate poster frame on open/seek.
+- **Audio = master clock:** `aSink.buffers(startT)` yields `WrappedAudioBuffer {buffer,timestamp,duration}`;
+  schedule each on one `AudioContext` via `src.start(baseTime + (timestamp - startT))` (the docs'
+  Web-Audio pattern). Media time = `startT + (audioContext.currentTime - baseTime)`.
+- **Sync:** a `requestAnimationFrame` present-loop reads media time off the audio clock and draws the
+  newest decoded `WrappedCanvas` with `timestamp <= mediaTime`. **No audio track** → use a
+  `performance.now()` wall clock as master instead.
+- **Window the audio:** do **not** for-await the whole file up front (the docs' 10-second snippet
+  schedules eagerly — fine for a demo, a memory problem for a long clip). Schedule only ~3–5 s ahead
+  of the master clock and top up; track scheduled `AudioBufferSourceNode`s so they can be stopped.
+- **Controls:** play/pause via `audioContext.suspend()/resume()`; seek = stop scheduled sources,
+  reset `baseTime`/`startT`, re-create the `canvases()`/`buffers()` iterators from the seek point,
+  `getCanvas(t)` for the poster; volume via a `GainNode`.
+
+**Lifecycle — MUST respect `previewRenderToken` and tear down the AudioContext (CLAUDE.md invariant).**
+The player is heavily async (decode loop + rAF loop + audio scheduling) and lives in the preview
+modal, which `previewRenderToken` governs (incremented on `renderPreview()`/`closePreview()`; stale
+async work bails). Bake in:
+- Capture the token when the player starts; re-check after every `await` and at the top of each rAF
+  tick. If stale → stop the rAF loop, `.stop()` every scheduled source, and `audioContext.close()`.
+- Browsers cap concurrent `AudioContext`s (~6), so teardown is **mandatory** — a leaked context keeps
+  audio playing after the modal closes and exhausts the pool after a few previews.
+
+**Seam discipline (do not regress existing invariants):**
+- Integrate in the **preview modal path only** (the `<video src="/media/{id}">` element). The grid
+  hover-cycle path stays separate — CLAUDE.md says the two are independent; **do not merge them.**
+- Reuse the existing `/media/{id}` **206 Range** endpoint (`serve_file_with_range`). **No new Python
+  route, no server change** — keeps the "ffmpeg/Python optional" and "browser-only mediabunny"
+  invariants intact.
+- **Secure-context only:** WebCodecs needs `localhost`/`127.0.0.1`. LAN-IP access → rung B skipped →
+  native then static. Same accepted limitation as thumbnails.
+
+**Reference implementation:** mediabunny ships an official from-scratch player with frame-accurate A/V
+sync — read it before coding and lift its clock/scheduling structure rather than reinventing:
+<https://mediabunny.dev/examples/media-player/> (source linked from <https://mediabunny.dev/examples>).
+
+**Verification matrix (mirror Phase 5 — headless + manual):**
+- **MKV/AVI wrapping H.264+AAC** (native can't play, WebCodecs can) → player mounts, video draws,
+  audio plays in sync; seek + pause work.
+- **ProRes / undecodable codec** → `canDecode()` false → graceful static notice, no console errors,
+  AudioContext never created.
+- **Long clip** → audio scheduling stays windowed (memory flat); closing the modal mid-playback stops
+  audio and closes the AudioContext (no leak; `previewRenderToken` honored).
+- **LAN-IP / non-secure context** → rung B skipped, falls to native then static.
+
+**Still out of scope, even for Phase 6:** subtitle rendering (mediabunny can't read subtitle tracks
+yet) and codecs the platform's WebCodecs cannot decode (the `canDecode()` gate is the honest ceiling).
 
 ## Files touched
-- `dedup.py` — constant + script injection + client JS (Phases 1-4)
-- `test_dedup.py` — Phase 5 assertions
-- `CLAUDE.md` — invariant + layout updates
+- `dedup.py` — constant + script injection + client JS (Phases 1-4); Phase 6 adds the preview-modal
+  fallback player JS (no server change).
+- `test_dedup.py` — Phase 5 assertions (Phase 6 adds player-seam assertions).
+- `CLAUDE.md` — invariant + layout updates.
 
 ## Open items
 - ~~Exact CDN URL + global namespace~~ → resolved: `window.Mediabunny`; unpkg `.cjs` for CDN, or
