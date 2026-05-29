@@ -4216,7 +4216,7 @@ def parse_args(argv):
         "--port",
         type=int,
         default=7979,
-        help="Port for the local browser UI (default: 7979). A fixed port lets browsers remember popup permissions.",
+        help="Port for the local browser UI (default: 7979). A fixed port lets the browser remember site permissions across runs.",
     )
     return parser.parse_args(argv)
 
