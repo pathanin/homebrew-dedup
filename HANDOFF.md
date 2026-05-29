@@ -94,10 +94,22 @@ Moved video duration/dimensions/codec collection from `/meta/{id}` to mediabunny
   metadata still uses `/meta/{id}`.
 - Server `serve_meta()` remains intact as fallback and for image EXIF/audio.
 
-## NEXT: Phase 5 — docs/final verification
-Update docs for the final three-rung video metadata/thumbnail behavior and run the remaining manual
-matrix: mediabunny available, mediabunny unavailable/CDN blocked, ffmpeg unavailable/static fallback,
-and server `/meta` fallback.
+## Phase 5 — docs/final verification (DONE this session)
+- CLAUDE.md updated: line count, file-layout table (mediabunny constants + client JS seams), a new
+  "mediabunny (video thumbnails + metadata)" section, the three-rung ffmpeg-optional invariant, and
+  the video-preview-vs-hover note.
+- `test_dedup.py` already covers the Phase 5 assertions (tag boundary, ffmpeg fallback still wired,
+  `hydrateThumb`/`canDecode`/metadata-source). Full suite green (99 OK).
+- Manual browser matrix run (headless Chromium, fixtures `/private/tmp/dedup-mb-phase3`, harness
+  `/private/tmp/dedup-mb-phase5`):
+  - CDN blocked → `window.Mediabunny` undefined; thumbnails fell back to `/thumb/` (`200 image/jpeg`)
+    and metadata to `/meta/` (ffprobe). Rung 1→2 confirmed.
+  - ffmpeg absent (`FFMPEG_PATH`/`FFPROBE_PATH` = None) → `/thumb/` 404 → `onerror` swaps in
+    `span.video-fallback`. Rung 2→3 confirmed.
+  - mediabunny-on path (`blob:` thumbs + `source: mediabunny`) verified in phases 2–4.
+
+## NEXT
+All planned phases (0–5) are complete. Remaining items are the open decision below.
 
 ## How to run / verify
 ```bash

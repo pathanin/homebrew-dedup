@@ -149,16 +149,25 @@ Webwright contract in `/private/tmp/webwright-phase4/` against duplicate 22-seco
 dimensions `320 × 240`, codec `avc1.64000c`, and no `/meta/` requests before or after side-pane
 metadata render.
 
-### Phase 5 — Tests + docs
-- Python (`test_dedup.py`): assert `build_browser_html` contains the mediabunny `<script>` when
-  `MEDIABUNNY_SRC` is set and **omits it when blank** (boundary); assert the ffmpeg fallback wiring
-  (`/thumb/`, `fallbackVideoThumb`) is still emitted (failure-mode coverage); regression-assert
-  `serve_meta`/`serve_thumbnail` behavior is unchanged.
-- JS isn't covered by the Python suite — document a manual browser matrix run via `--dry-run`:
-  (a) mediabunny on (Chrome), (b) undecodable codec → ffmpeg fallback, (c) CDN blocked/offline →
-  ffmpeg fallback, (d) ffmpeg absent → static icon.
-- Update CLAUDE.md: file-layout table (mediabunny script + `hydrateThumb`), the "ffmpeg optional"
-  invariant (now three-rung), and the video-preview-vs-hover note.
+### Phase 5 — Tests + docs ✅ DONE (2026-05-29)
+- Python (`test_dedup.py`): covered — `mediabunny_script_tag` emits a deferred tag when set and
+  returns `""` when blank (boundary); `build_browser_html` loads `MEDIABUNNY_SRC`, keeps the ffmpeg
+  fallback wiring (`/thumb/${...}?i=${...}`, `fallbackVideoThumb`), emits `hydrateThumb` /
+  `waitForMediabunny` / `canDecode`, sets metadata `source = "mediabunny"` first, and the grid video
+  `<img>` carries `onerror="fallbackVideoThumb(this)"` with no initial `src="/thumb/`. Full suite
+  green (99 OK).
+- CLAUDE.md updated: line count, file-layout table (mediabunny constants + client JS), a new
+  "mediabunny (video thumbnails + metadata)" section (CDN delivery, unpkg-vs-jsDelivr, secure-context,
+  trade-off), the three-rung ffmpeg-optional invariant, and the video-preview-vs-hover note.
+- Manual browser matrix (headless Chromium, fixtures `/private/tmp/dedup-mb-phase3`,
+  harness `/private/tmp/dedup-mb-phase5`):
+  - **(a) mediabunny on** → `blob:` thumbnails + `source: mediabunny` metadata — verified phases 2–4.
+  - **(b/c) CDN blocked** (`MEDIABUNNY_SRC` → unreachable URL) → `window.Mediabunny` undefined; grid
+    `<img>` fell back to `/thumb/{id}` (`200 image/jpeg`, naturalWidth 360) and metadata to `/meta/`
+    (2 ffprobe requests). Rung 1→2 confirmed.
+  - **(d) ffmpeg absent** (`FFMPEG_PATH`/`FFPROBE_PATH` = None) → `/thumb/` returns 404, `onerror`
+    swaps in `span.video-fallback` (filename text). 0 video `<img>` remain, 2 static spans. Rung 2→3
+    confirmed.
 
 ### Phase 6 — Out of scope (noted, not built)
 Custom mediabunny canvas+WebAudio player for browser-unplayable formats (MKV/AVI/HEVC/ProRes).
