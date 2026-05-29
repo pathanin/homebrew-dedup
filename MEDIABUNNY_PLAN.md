@@ -172,7 +172,7 @@ metadata render.
     swaps in `span.video-fallback` (filename text). 0 video `<img>` remain, 2 static spans. Rung 2→3
     confirmed.
 
-### Phase 6 — Fallback player for browser-unplayable formats (PLANNED — next work)
+### Phase 6 — Fallback player for browser-unplayable formats (DONE)
 **Goal:** let the *preview modal* **play** files the native `<video>` can't, by decoding them
 in-browser with mediabunny (WebCodecs video + the Web Audio API). Same engine as the
 thumbnail/metadata work, so it stays browser-only — **no new Python dependency and no new server
@@ -258,6 +258,16 @@ sync — read it before coding and lift its clock/scheduling structure rather th
 
 **Still out of scope, even for Phase 6:** subtitle rendering (mediabunny can't read subtitle tracks
 yet) and codecs the platform's WebCodecs cannot decode (the `canDecode()` gate is the honest ceiling).
+
+Implementation notes from completion:
+- `hydratePreviewVideo()` keeps native `<video>` as the first rung, then detects native failure with
+  error/stall/frozen-video checks before attempting mediabunny.
+- `mountMediabunnyPreviewPlayer()` builds the modal-only canvas + WebAudio player from `/media/{id}`;
+  it windows audio scheduling, uses `previewRenderToken` as the stale-work guard, and closes the
+  `AudioContext` through `stopPreviewPlayer()` on rerender/close.
+- Verification covered native MP4 staying on `<video>`, direct mediabunny player mount against the
+  MP4 fixture, and an AVI remux degrading to the static notice when `canDecode()` did not permit
+  playback. That last case is expected: Phase 6 does not add codecs WebCodecs cannot decode.
 
 ## Files touched
 - `dedup.py` — constant + script injection + client JS (Phases 1-4); Phase 6 adds the preview-modal

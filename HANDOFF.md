@@ -112,16 +112,25 @@ Moved video duration/dimensions/codec collection from `/meta/{id}` to mediabunny
     `span.video-fallback`. Rung 2→3 confirmed.
   - mediabunny-on path (`blob:` thumbs + `source: mediabunny`) verified in phases 2–4.
 
-## NEXT: Phase 6 — fallback player for browser-unplayable formats
-Phases 0–5 (thumbnails + metadata) are complete. **Next work is Phase 6:** a mediabunny canvas +
-WebAudio player mounted in the preview modal when native `<video>` can't play a file. Full plan,
-APIs, rung logic, lifecycle/teardown rules, and verification matrix are in `MEDIABUNNY_PLAN.md` →
-"Phase 6". Key guardrails to carry in (do not rediscover):
-- Preview-modal path **only**; reuse `/media/{id}` Range; **no server change**.
-- Respect `previewRenderToken` and `audioContext.close()` on teardown (CLAUDE.md invariant; browsers
-  cap AudioContexts ~6).
-- `canDecode()` is the honest ceiling — MKV/AVI win, ProRes/undecodable degrade to static.
-- Reference: <https://mediabunny.dev/examples/media-player/>.
+## Phase 6 — fallback player for browser-unplayable formats (DONE this session)
+Added a modal-only mediabunny canvas + WebAudio fallback player. Native `<video>` remains the first
+rung; `hydratePreviewVideo()` only swaps to the fallback after native error/stall/frozen-video
+detection. `mountMediabunnyPreviewPlayer()` reuses `/media/{id}`, checks `track.canDecode()`, windows
+audio scheduling, draws canvas frames, and tears down through `stopPreviewPlayer()` on rerender/close.
+No server route was added.
+
+Verification this session:
+- `rtk python3 -m unittest -v test_dedup.py` → 102 OK.
+- Headless Chromium smoke on `/private/tmp/dedup-mb-phase3` confirmed MP4 stays on native `<video>`.
+- Direct headless Chromium mount of `mountMediabunnyPreviewPlayer()` against the MP4 fixture produced
+  a `320 × 240` canvas player and no console/page errors.
+- AVI remux smoke degraded to the static notice, which is acceptable because `canDecode()` rejected
+  that payload on this machine; Phase 6 does not add codecs WebCodecs cannot decode.
+
+## NEXT
+Find a stronger manual fixture for the fallback-player happy path: a container-blocked but WebCodecs-
+decodable H.264/H.265/VP9/AV1 sample with audio. The local AVI remux was not decodable, so it only
+validated the static rung.
 
 ## How to run / verify
 ```bash

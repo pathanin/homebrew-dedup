@@ -1163,6 +1163,13 @@ button.danger-action:hover:not(:disabled) { opacity: .85; }
 .preview-body { min-height: 320px; min-width: 0; display: grid; place-items: center; background: var(--surface); border-radius: 8px; overflow: hidden; }
 .preview-body img, .preview-body iframe, .preview-body video { max-width: 100%; width: 100%; max-height: 70vh; border: 0; object-fit: contain; background: var(--panel); }
 .preview-body pre { width: 100%; max-width: 100%; max-height: 70vh; overflow: auto; margin: 0; padding: 12px; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--surface); color: var(--text); }
+.mb-player { width: 100%; max-height: 70vh; display: grid; grid-template-rows: minmax(0, 1fr) auto; align-self: stretch; background: #000; }
+.mb-player-canvas-wrap { min-height: 0; display: grid; place-items: center; overflow: hidden; }
+.mb-player canvas { max-width: 100%; max-height: 100%; width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
+.mb-player-controls { display: grid; grid-template-columns: auto minmax(90px, 1fr) auto 88px; gap: 8px; align-items: center; padding: 8px; background: rgba(0,0,0,.78); color: #fff; font-size: 12px; }
+.mb-player-controls input[type="range"] { min-width: 0; }
+.mb-player-time { min-width: 86px; text-align: center; font-variant-numeric: tabular-nums; }
+.preview-unavailable { padding: 28px; color: var(--muted); text-align: center; font-size: 13px; overflow-wrap: anywhere; word-break: break-word; }
 .dir-picker { position: absolute; right: 10px; top: 40px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.12); z-index: 20; width: min(460px, 90%); max-height: 400px; overflow: auto; }
 .dir-picker-row { border-bottom: 1px solid var(--line); padding: 10px 12px; }
 .dir-picker-row:last-child { border-bottom: 0; }
@@ -1278,6 +1285,9 @@ body.list-view .file-reason { flex: 1; min-width: 60px; font-size: 10px; color: 
   .file { grid-template-rows: 110px 1fr; }
   .thumb { height: 110px; }
   .thumb img { max-height: 110px; }
+  .mb-player { max-height: 50vh; }
+  .mb-player-controls { grid-template-columns: auto minmax(80px, 1fr) auto; }
+  .mb-player-volume { display: none; }
   #previewPane { display: none !important; }
   .header-divider { display: none; }
 }
@@ -1402,6 +1412,7 @@ let trashedOnly = false;
 let isSubmitting = false;
 let previewContext = null;
 let previewRenderToken = 0;
+let previewPlayer = null;
 let activeGroupId = null;
 let activeFileId = null;
 let paneOpen = true;
@@ -1994,6 +2005,10 @@ async function fetchServerMetadata(file) {
   if (!response.ok) throw new Error("metadata failed");
   return response.json();
 }
+function stopPreviewPlayer() {
+  if (previewPlayer && typeof previewPlayer.destroy === "function") previewPlayer.destroy();
+  previewPlayer = null;
+}
 async function hydrateVideoFile(file) {
   if (!file || file.mediaKind !== "video" || file.videoMetaLoaded) return file;
   if (!file.videoMetaPromise) {
@@ -2444,10 +2459,13 @@ function mediaHtml(file) {
 }
 function previewHtml(file) {
   if (file.mediaKind === "image") return `<img src="/media/${urlId(file.id)}" alt="">`;
-  if (file.mediaKind === "video") return `<video controls autoplay muted src="/media/${urlId(file.id)}"></video>`;
+  if (file.mediaKind === "video") return `<video controls autoplay muted playsinline src="/media/${urlId(file.id)}"></video>`;
   if (file.previewKind === "pdf") return `<div style="padding:32px;text-align:center;color:var(--muted);font-size:13px;display:flex;flex-direction:column;align-items:center;gap:12px"><p style="margin:0">PDF preview available in the side panel.</p><a href="/pdf/${urlId(file.id)}" target="_blank" style="color:var(--text);font-weight:600">↗ Open PDF in new tab</a></div>`;
   if (file.previewKind === "text") return `<pre data-preview-text="${esc(file.id)}">Loading...</pre>`;
   return `<p>${esc(file.name)}</p>`;
+}
+function previewUnavailableHtml(file) {
+  return `<div class="preview-unavailable">${esc(file && file.name ? file.name : "Video preview unavailable")}<br>Video preview unavailable</div>`;
 }
 function updatePreviewDecision(fileId) {
   const isTrash = trash.has(fileId);
@@ -2516,11 +2534,280 @@ function navigateMainView(dir) {
     if (groupEl) groupEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }
 }
+function nativeVideoCannotPlay(video, token, file) {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (failed) => {
+      if (done) return;
+      done = true;
+      cleanup();
+      resolve(Boolean(failed));
+    };
+    const stillCurrent = () => previewContext && previewContext.fileId === file.id && token === previewRenderToken && video.isConnected;
+    const onError = () => finish(true);
+    const onPlayable = () => finish(false);
+    const checkFrozenVideo = () => {
+      if (!stillCurrent()) return finish(false);
+      if (video.error) return finish(true);
+      if (video.currentTime > 0.2 && video.videoWidth === 0) return finish(true);
+    };
+    const stallTimer = setTimeout(() => {
+      if (!stillCurrent()) return finish(false);
+      finish(video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || Boolean(video.error));
+    }, 2800);
+    const frozenTimer = setInterval(checkFrozenVideo, 450);
+    const cleanup = () => {
+      clearTimeout(stallTimer);
+      clearInterval(frozenTimer);
+      video.removeEventListener("error", onError);
+      video.removeEventListener("loadeddata", onPlayable);
+      video.removeEventListener("canplay", onPlayable);
+      video.removeEventListener("playing", onPlayable);
+    };
+    video.addEventListener("error", onError, { once: true });
+    video.addEventListener("loadeddata", onPlayable, { once: true });
+    video.addEventListener("canplay", onPlayable, { once: true });
+    video.addEventListener("playing", onPlayable, { once: true });
+  });
+}
+async function hydratePreviewVideo(file, token) {
+  const body = $("previewBody");
+  const video = body ? body.querySelector("video") : null;
+  if (!video) return;
+  const failed = await nativeVideoCannotPlay(video, token, file);
+  if (!failed || !previewContext || previewContext.fileId !== file.id || token !== previewRenderToken) return;
+  video.pause();
+  video.src = "";
+  try {
+    if (!(await waitForMediabunny())) throw new Error("mediabunny unavailable");
+    if (!previewContext || previewContext.fileId !== file.id || token !== previewRenderToken) return;
+    previewPlayer = await mountMediabunnyPreviewPlayer(file, token);
+  } catch {
+    if (!previewContext || previewContext.fileId !== file.id || token !== previewRenderToken) return;
+    stopPreviewPlayer();
+    $("previewBody").innerHTML = previewUnavailableHtml(file);
+  }
+}
+function isPreviewPlayerCurrent(file, token) {
+  return previewContext && previewContext.fileId === file.id && token === previewRenderToken;
+}
+async function mountMediabunnyPreviewPlayer(file, token) {
+  stopPreviewPlayer();
+  const body = $("previewBody");
+  if (!body || !isPreviewPlayerCurrent(file, token)) throw new Error("stale preview");
+  const { input, track: videoTrack, canDecode } = await mbVideoTrack(file.id);
+  if (!isPreviewPlayerCurrent(file, token)) throw new Error("stale preview");
+  if (!canDecode) throw new Error("codec unavailable");
+  const { CanvasSink, AudioBufferSink } = window.Mediabunny;
+  const duration = Number(file.videoDuration || await input.computeDuration() || 0);
+  const displayWidth = Math.max(320, Number(await videoTrack.getDisplayWidth() || 640));
+  const displayHeight = Math.max(180, Number(await videoTrack.getDisplayHeight() || 360));
+  let audioTrack = null;
+  let audioSink = null;
+  try {
+    audioTrack = await input.getPrimaryAudioTrack();
+    if (audioTrack && await audioTrack.canDecode()) audioSink = new AudioBufferSink(audioTrack);
+  } catch {}
+  if (!isPreviewPlayerCurrent(file, token)) throw new Error("stale preview");
+  const playerEl = document.createElement("div");
+  playerEl.className = "mb-player";
+  playerEl.innerHTML = `<div class="mb-player-canvas-wrap"><canvas></canvas></div><div class="mb-player-controls"><button type="button" data-mb-play>Pause</button><input data-mb-seek type="range" min="0" max="${esc(String(duration || 0))}" step="0.05" value="0"><span class="mb-player-time" data-mb-time>0:00${duration ? " / " + esc(formatDuration(duration)) : ""}</span><input class="mb-player-volume" data-mb-volume type="range" min="0" max="1" step="0.05" value="1" title="Volume"></div>`;
+  body.innerHTML = "";
+  body.appendChild(playerEl);
+  const canvas = playerEl.querySelector("canvas");
+  const ctx = canvas.getContext("2d");
+  canvas.width = displayWidth;
+  canvas.height = displayHeight;
+  const playButton = playerEl.querySelector("[data-mb-play]");
+  const seekInput = playerEl.querySelector("[data-mb-seek]");
+  const timeNode = playerEl.querySelector("[data-mb-time]");
+  const volumeInput = playerEl.querySelector("[data-mb-volume]");
+  const vSink = new CanvasSink(videoTrack, { width: displayWidth, height: displayHeight, fit: "contain", poolSize: 3 });
+  const audioContext = audioSink ? new (window.AudioContext || window.webkitAudioContext)() : null;
+  const gainNode = audioContext ? audioContext.createGain() : null;
+  if (gainNode) gainNode.connect(audioContext.destination);
+  let destroyed = false;
+  let playing = true;
+  let startT = 0;
+  let baseAudioTime = audioContext ? audioContext.currentTime : 0;
+  let baseWallTime = performance.now();
+  let frameIterator = null;
+  let audioIterator = null;
+  let latestFrame = null;
+  let pendingFrame = null;
+  let pendingAudio = null;
+  let rafId = 0;
+  let frameLoopId = 0;
+  let audioLoopId = 0;
+  const scheduledSources = [];
+  const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+  const destroy = () => {
+    if (destroyed) return;
+    destroyed = true;
+    if (rafId) cancelAnimationFrame(rafId);
+    for (const source of scheduledSources.splice(0)) {
+      try { source.stop(); } catch {}
+    }
+    if (audioContext) audioContext.close().catch(() => {});
+  };
+  const isCurrent = () => !destroyed && isPreviewPlayerCurrent(file, token);
+  const mediaTime = () => {
+    if (!playing) return startT;
+    const elapsed = audioContext ? audioContext.currentTime - baseAudioTime : (performance.now() - baseWallTime) / 1000;
+    return Math.min(duration || Infinity, Math.max(0, startT + elapsed));
+  };
+  const drawFrame = (wrapped) => {
+    if (!wrapped || !ctx) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(wrapped.canvas, 0, 0, canvas.width, canvas.height);
+  };
+  const resetLoops = async (seekT = 0) => {
+    for (const source of scheduledSources.splice(0)) {
+      try { source.stop(); } catch {}
+    }
+    startT = Math.max(0, Math.min(Number(seekT || 0), duration || Number.MAX_SAFE_INTEGER));
+    baseAudioTime = audioContext ? audioContext.currentTime : 0;
+    baseWallTime = performance.now();
+    frameIterator = vSink.canvases(startT);
+    audioIterator = audioSink ? audioSink.buffers(startT) : null;
+    pendingFrame = null;
+    pendingAudio = null;
+    const poster = await vSink.getCanvas(startT);
+    if (!isCurrent()) return;
+    latestFrame = poster;
+    drawFrame(poster);
+  };
+  const runFrameLoop = async () => {
+    const loopId = ++frameLoopId;
+    while (isCurrent() && loopId === frameLoopId) {
+      if (!pendingFrame) {
+        const next = await frameIterator.next();
+        if (!isCurrent() || loopId !== frameLoopId || next.done) return;
+        pendingFrame = next.value;
+      }
+      if (pendingFrame.timestamp <= mediaTime() + 0.1) {
+        latestFrame = pendingFrame;
+        pendingFrame = null;
+      } else {
+        await sleep(80);
+      }
+    }
+  };
+  const scheduleAudio = async () => {
+    if (!audioSink || !audioContext || !gainNode) return;
+    const loopId = ++audioLoopId;
+    while (isCurrent() && loopId === audioLoopId) {
+      if (!playing || audioContext.state === "suspended") {
+        await new Promise(resolve => setTimeout(resolve, 120));
+        continue;
+      }
+      if (!pendingAudio) {
+        const next = await audioIterator.next();
+        if (!isCurrent() || loopId !== audioLoopId || next.done) return;
+        pendingAudio = next.value;
+      }
+      const { buffer, timestamp, duration: bufferDuration } = pendingAudio;
+      const when = baseAudioTime + Math.max(0, timestamp - startT);
+      const ahead = baseAudioTime + (mediaTime() - startT) + 4.5;
+      if (when > ahead) {
+        await sleep(120);
+        continue;
+      }
+      const source = audioContext.createBufferSource();
+      source.buffer = buffer;
+      source.connect(gainNode);
+      source.onended = () => {
+        const idx = scheduledSources.indexOf(source);
+        if (idx >= 0) scheduledSources.splice(idx, 1);
+      };
+      scheduledSources.push(source);
+      source.start(Math.max(audioContext.currentTime, when));
+      pendingAudio = null;
+      if (bufferDuration > 0.5) await sleep(80);
+    }
+  };
+  const renderLoop = () => {
+    if (!isCurrent()) {
+      destroy();
+      return;
+    }
+    const t = mediaTime();
+    if (latestFrame && latestFrame.timestamp <= t + 0.03) drawFrame(latestFrame);
+    seekInput.value = String(Math.min(Number(seekInput.max || "0") || t, t));
+    timeNode.textContent = `${formatDuration(t)}${duration ? " / " + formatDuration(duration) : ""}`;
+    if (duration && t >= duration) {
+      playing = false;
+      playButton.textContent = "Play";
+      return;
+    }
+    rafId = requestAnimationFrame(renderLoop);
+  };
+  const seek = async (value) => {
+    frameLoopId++;
+    audioLoopId++;
+    await resetLoops(value);
+    if (!isCurrent()) return;
+    runFrameLoop();
+    scheduleAudio();
+  };
+  playButton.addEventListener("click", async () => {
+    if (!isCurrent()) return;
+    const pausedAt = mediaTime();
+    playing = !playing;
+    playButton.textContent = playing ? "Pause" : "Play";
+    if (audioContext) {
+      if (playing) {
+        frameLoopId++;
+        audioLoopId++;
+        await resetLoops(startT);
+        if (!isCurrent()) return;
+        await audioContext.resume();
+        runFrameLoop();
+        scheduleAudio();
+      } else {
+        startT = pausedAt;
+        for (const source of scheduledSources.splice(0)) {
+          try { source.stop(); } catch {}
+        }
+        await audioContext.suspend();
+      }
+    } else if (playing) {
+      frameLoopId++;
+      await resetLoops(startT);
+      if (!isCurrent()) return;
+      runFrameLoop();
+      baseWallTime = performance.now();
+      rafId = requestAnimationFrame(renderLoop);
+    } else {
+      startT = pausedAt;
+    }
+  });
+  seekInput.addEventListener("input", () => {
+    playing = false;
+    playButton.textContent = "Play";
+    seek(Number(seekInput.value));
+  });
+  if (volumeInput && gainNode) volumeInput.addEventListener("input", () => { gainNode.gain.value = Number(volumeInput.value || 1); });
+  const player = { destroy };
+  await resetLoops(0);
+  if (!isCurrent()) {
+    destroy();
+    throw new Error("stale preview");
+  }
+  if (audioContext && audioContext.state === "suspended") {
+    await audioContext.resume().catch(() => {});
+  }
+  runFrameLoop();
+  scheduleAudio();
+  rafId = requestAnimationFrame(renderLoop);
+  return player;
+}
 function renderPreview(fileId) {
   if (!previewContext) return;
   const file = findFile(fileId);
   if (!file) return;
   const token = ++previewRenderToken;
+  stopPreviewPlayer();
   const oldVideo = $("previewBody").querySelector("video");
   if (oldVideo) { oldVideo.pause(); oldVideo.src = ""; }
   previewContext.fileId = fileId;
@@ -2532,6 +2819,9 @@ function renderPreview(fileId) {
   const textNode = $("previewBody").querySelector("[data-preview-text]");
   if (textNode) {
     hydratePreviewText(file.id, token, textNode);
+  }
+  if (file.mediaKind === "video") {
+    hydratePreviewVideo(file, token);
   }
 }
 async function hydratePreviewText(fileId, token, textNode) {
@@ -2560,6 +2850,7 @@ function openPreview(fileId, groupId, event) {
 }
 function closePreview(restoreFocus = true) {
   previewRenderToken++;
+  stopPreviewPlayer();
   const video = $("previewBody").querySelector("video");
   if (video) { video.pause(); video.src = ""; }
   $("previewOverlay").classList.remove("is-open");
