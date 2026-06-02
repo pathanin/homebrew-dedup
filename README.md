@@ -17,11 +17,13 @@ It is built for large, messy folders where you want fast duplicate detection, vi
 - Reason column in list view co-locates the original/copy rationale with Keep and Trash controls
 - Previews for images, videos, audio, PDFs, and text files
 - Media metadata when optional tools are installed: duration, dimensions, codec, bitrate, and EXIF
-- Recoverable cleanup by default: Trash, `/usr/bin/trash`, or same-volume NAS recycle folders when available
+- Recoverable cleanup by default: Trash (Recycle Bin on Windows), `/usr/bin/trash` on macOS external volumes, or same-volume NAS recycle folders when available
 - Safety checks for filesystem roots, home root scans, macOS Photos libraries, stale selections, and symlink replacement
 - Optional empty-folder cleanup after duplicate review
 
 ## Install
+
+### macOS / Linux
 
 Install from this Homebrew tap:
 
@@ -30,7 +32,46 @@ brew tap pathanin/dedup
 brew install pathanin/dedup/dedup
 ```
 
-Verify the command:
+### Windows
+
+Requires **Python 3.8+** (install from [python.org](https://python.org) or the Microsoft Store).
+
+Install with the PowerShell installer from the [latest release](https://github.com/pathanin/homebrew-dedup/releases/latest):
+
+```powershell
+# Download the installer
+Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/pathanin/homebrew-dedup/releases/latest/download/install.ps1" -OutFile install.ps1
+
+# Run it
+powershell -ExecutionPolicy Bypass -File install.ps1
+```
+
+By default, the installer:
+
+1. Resolves Python (tries `py -3` first, then `python`).
+2. Bootstraps pip if needed, then installs `send2trash`.
+3. Downloads the latest release from GitHub and extracts `dedup.py` + `dedup.cmd` to `%LOCALAPPDATA%\Programs\dedup`.
+4. Adds that directory to your user `PATH` (unless `-NoPathUpdate`).
+
+**No administrator privileges are required.** Every step runs in per-user scope:
+install directory under `%LOCALAPPDATA%`, `pip install --user`, and user-level `PATH` via `HKCU\Environment`.
+
+After installation, reopen your terminal and verify:
+
+```powershell
+dedup --help
+```
+
+**Installer options:**
+
+```powershell
+.\install.ps1 -Version v0.4.1                    # specific version
+.\install.ps1 -InstallDir "D:\tools\dedup"       # custom location
+.\install.ps1 -Force                              # overwrite without prompt
+.\install.ps1 -NoPathUpdate                       # skip PATH modification
+```
+
+### Verify (all platforms)
 
 ```sh
 dedup --help
@@ -40,10 +81,21 @@ dedup --help
 
 `dedup` works without these tools, but they improve previews and metadata:
 
+**macOS / Linux:**
+
 ```sh
 brew install ffmpeg        # video thumbnails and media duration, codec, and bitrate
 brew install exiftool      # image EXIF such as camera, lens, aperture, and GPS
 ```
+
+**Windows:**
+
+```powershell
+winget install Gyan.FFmpeg        # video thumbnails and media duration, codec, and bitrate
+```
+Or download FFmpeg manually from [ffmpeg.org](https://ffmpeg.org) and add `bin\` to your `PATH`.
+
+`exiftool` on Windows requires a manual install from [exiftool.org](https://exiftool.org).
 
 `ffmpeg` also provides `ffprobe`, which `dedup` uses for media metadata.
 
@@ -115,7 +167,7 @@ The review UI opens automatically at a local `http://127.0.0.1:7979` URL with a 
 --allow-home-root           Allow scanning your home directory root.
 --allow-photo-library       Allow scanning inside macOS .photoslibrary packages.
 -e, --clean-empty-dirs      Review and trash empty directories after file cleanup.
---allow-slow-local-trash    Allow last-resort copies to local ~/.Trash.
+--allow-slow-local-trash    Allow last-resort copies to a local trash fallback (macOS ~/.Trash)
 --permanent-on-no-trash     Permanently delete when no recoverable trash route works.
 --port PORT                 Port for the local browser UI.
 ```
@@ -132,11 +184,11 @@ Risky scan roots are guarded. Filesystem roots are refused, home-directory root 
 
 When trashing fails, `dedup` tries recoverable paths first:
 
-1. `send2trash`
+1. `send2trash` (system Trash / Recycle Bin)
 2. `/usr/bin/trash` on macOS external volumes
 3. Existing same-volume NAS recycle folders such as `#recycle`, `@Recycle`, or `.recycle`
 
-If no recoverable trash path exists, `dedup` skips the file in non-interactive mode. Interactive runs ask what to do. Use `--allow-slow-local-trash` to allow copying into local `~/.Trash`; use `--permanent-on-no-trash` only when irreversible deletion is acceptable.
+If no recoverable trash path exists, `dedup` skips the file in non-interactive mode. Interactive runs ask what to do. Use `--allow-slow-local-trash` to allow copying into a local trash fallback (`~/.Trash` on macOS); use `--permanent-on-no-trash` only when irreversible deletion is acceptable.
 
 ## Direct Python Use
 
@@ -156,6 +208,8 @@ Optional preview tools are still discovered from your `PATH`.
 
 ## Update
 
+**macOS / Linux (Homebrew):**
+
 ```sh
 brew update
 brew upgrade pathanin/dedup/dedup
@@ -165,4 +219,12 @@ If you already installed it and want to reinstall the current formula:
 
 ```sh
 brew reinstall pathanin/dedup/dedup
+```
+
+**Windows:**
+
+Download and rerun the installer — it upgrades in place:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1 -Force
 ```
