@@ -1163,6 +1163,35 @@ class TrashSafetyTests(unittest.TestCase):
                 dedup.move_to_local_trash("/some/file.txt")
             self.assertIn("Windows has no local trash fallback", str(ctx.exception))
 
+    def test_prompt_permanent_delete_hides_local_option_on_windows(self):
+        """On Windows, prompt_permanent_delete must never offer [l] even when
+        allow_slow_local_trash=True, because move_to_local_trash raises on Windows."""
+        printed = []
+        with mock.patch.object(dedup, "CURRENT_OS", dedup.OS_WINDOWS):
+            result = dedup.prompt_permanent_delete(
+                volume_root="/mnt/data",
+                files_on_volume=["/mnt/data/a.txt"],
+                input_func=lambda _: "l",  # boundary: user somehow types "l"
+                allow_slow_local_trash=True,
+            )
+        # "l" must not be accepted — safe default is "skip"
+        self.assertEqual(result, "skip")
+
+    def test_prompt_permanent_delete_no_local_suggestion_on_windows(self):
+        """On Windows the --allow-slow-local-trash hint must not be printed."""
+        output_lines = []
+        with mock.patch.object(dedup, "CURRENT_OS", dedup.OS_WINDOWS):
+            with mock.patch("builtins.print", side_effect=lambda *a, **k: output_lines.append(" ".join(str(x) for x in a))):
+                dedup.prompt_permanent_delete(
+                    volume_root="/mnt/data",
+                    files_on_volume=["/mnt/data/a.txt"],
+                    input_func=lambda _: "n",
+                    allow_slow_local_trash=False,
+                )
+        combined = "\n".join(output_lines)
+        self.assertNotIn("allow-slow-local-trash", combined)
+        self.assertNotIn("[l]", combined)
+
     def test_decide_no_trash_strategy_groups_by_volume_root(self):
         """_decide_no_trash_strategy must use get_volume_root
         (not get_macos_volume_root) so that files_on_volume is populated

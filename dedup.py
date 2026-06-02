@@ -4107,7 +4107,7 @@ def prompt_permanent_delete(
     if count > len(preview):
         print(f"  ... and {count - len(preview)} more")
     print()
-    if allow_slow_local_trash:
+    if allow_slow_local_trash and CURRENT_OS != OS_WINDOWS:
         print("Choose how to handle these items:")
         print("  [p] Permanently delete them. This is irreversible (like Finder's 'Delete Immediately').")
         print("  [l] Move them to a local trash fallback directory. This may be slow across the network.")
@@ -4115,13 +4115,14 @@ def prompt_permanent_delete(
         prompt = "Permanently delete, use local trash, or skip? [p/l/S]: "
     else:
         print("Permanently delete them? This is irreversible (like Finder's 'Delete Immediately').")
-        print(f"Decline to skip these {item_label}s — pass --allow-slow-local-trash to use the local trash fallback instead.")
+        if CURRENT_OS != OS_WINDOWS:
+            print(f"Decline to skip these {item_label}s — pass --allow-slow-local-trash to use the local trash fallback instead.")
         prompt = "Permanently delete? [y/N]: "
     try:
         answer = input_func(prompt).strip().lower()
     except EOFError:
         return "skip"
-    if allow_slow_local_trash and answer in ("l", "local", "trash", "local trash"):
+    if allow_slow_local_trash and CURRENT_OS != OS_WINDOWS and answer in ("l", "local", "trash", "local trash"):
         return "local"
     if answer in ("y", "yes", "p", "permanent", "delete"):
         return "permanent"
