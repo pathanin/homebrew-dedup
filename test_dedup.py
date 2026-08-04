@@ -93,6 +93,40 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.port, 8080)
 
 
+class HashSelectionTests(unittest.TestCase):
+    def fake_timings(self, seconds_by_name):
+        def probe(hash_name, payload, rounds=dedup.HASH_PROBE_ROUNDS):
+            return seconds_by_name[hash_name]
+
+        return mock.patch.object(dedup, "_probe_hash_seconds", probe)
+
+    def test_selects_accelerated_hash_only_past_the_margin(self):
+        margin = dedup.HASH_PROBE_MARGIN
+        # Exactly at the margin counts as a clear win.
+        timings = {dedup.BASELINE_HASH_NAME: margin, dedup.ACCELERATED_HASH_NAME: 1.0}
+        with self.fake_timings(timings):
+            self.assertEqual(dedup.select_hash_name(), dedup.ACCELERATED_HASH_NAME)
+
+        # Just under it does not: timing noise must never flip the choice.
+        timings = {dedup.BASELINE_HASH_NAME: margin - 0.01, dedup.ACCELERATED_HASH_NAME: 1.0}
+        with self.fake_timings(timings):
+            self.assertEqual(dedup.select_hash_name(), dedup.BASELINE_HASH_NAME)
+
+    def test_falls_back_to_baseline_when_probe_fails(self):
+        with mock.patch.object(dedup, "ACCELERATED_HASH_NAME", "not-a-real-hash"):
+            self.assertEqual(dedup.select_hash_name(), dedup.BASELINE_HASH_NAME)
+
+        # A zero-second reading means the probe is unusable, not infinitely fast.
+        timings = {dedup.BASELINE_HASH_NAME: 1.0, dedup.ACCELERATED_HASH_NAME: 0.0}
+        with self.fake_timings(timings):
+            self.assertEqual(dedup.select_hash_name(), dedup.BASELINE_HASH_NAME)
+
+    def test_selected_hashes_are_usable_and_consistent(self):
+        self.assertEqual(dedup.FAST_HASH_NAME, dedup.FULL_HASH_NAME)
+        self.assertIn(dedup.FULL_HASH_NAME, (dedup.BASELINE_HASH_NAME, dedup.ACCELERATED_HASH_NAME))
+        self.assertTrue(dedup.make_hasher(dedup.FULL_HASH_NAME).hexdigest())
+
+
 class DuplicateGroupingTests(unittest.TestCase):
     def make_options(self, path, verify_mode=dedup.VERIFY_FAST):
         return dedup.ScanOptions(
@@ -580,6 +614,70 @@ class BrowserHelperTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=2)
 
+    def post_selection(self, state, on_confirm):
+        state.on_confirm = on_confirm
+        try:
+            server = ThreadingHTTPServer(("127.0.0.1", 0), dedup.make_browser_handler(state))
+        except PermissionError:
+            self.skipTest("loopback bind not permitted")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            base_url = f"http://127.0.0.1:{server.server_port}"
+            token = state.session_id
+            with urllib.request.urlopen(f"{base_url}/api/groups?token={token}") as response:
+                groups = json.loads(response.read().decode("utf-8"))["groups"]
+            request = urllib.request.Request(
+                f"{base_url}/api/selection?token={token}",
+                data=json.dumps({"trashIds": [groups[0]["files"][1]["id"]]}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request) as response:
+                return json.loads(response.read().decode("utf-8"))
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def make_selection_state(self):
+        group = dedup.DuplicateGroup(
+            "abc",
+            (
+                dedup.FileInfo("/tmp/photo.jpg", 4, 1),
+                dedup.FileInfo("/tmp/photo copy.jpg", 4, 2),
+            ),
+        )
+        return dedup.BrowserSelectionState([group])
+
+    def test_confirm_hook_runs_before_the_main_thread_is_woken(self):
+        state = self.make_selection_state()
+        seen = {}
+
+        def on_confirm(paths):
+            # The point of the hook: background work is re-prioritised while
+            # the main thread is still parked, not after teardown.
+            seen["done_already_set"] = state.done.is_set()
+            seen["paths"] = paths
+
+        result = self.post_selection(state, on_confirm)
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(seen["done_already_set"])
+        self.assertEqual(seen["paths"], ["/tmp/photo copy.jpg"])
+
+    def test_confirm_hook_failure_does_not_strand_the_selection(self):
+        state = self.make_selection_state()
+
+        def on_confirm(paths):
+            raise RuntimeError("boom")
+
+        result = self.post_selection(state, on_confirm)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(state.done.is_set())
+        self.assertEqual(state.selected_paths, ["/tmp/photo copy.jpg"])
+
     def test_browser_handler_serves_lazy_video_metadata(self):
         group = dedup.DuplicateGroup(
             "abc",
@@ -773,33 +871,26 @@ class TrashSafetyTests(unittest.TestCase):
 
     def test_fast_mode_selection_requires_exact_kept_duplicate(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            path_a = os.path.join(temp_dir, "a.bin")
-            path_b = os.path.join(temp_dir, "b.bin")
-            size = dedup.SMALL_FILE_FULL_HASH_BYTES + dedup.FAST_SAMPLE_BYTES * 3
-            body_a = bytearray(b"x" * size)
-            body_b = bytearray(body_a)
-            body_b[dedup.FAST_SAMPLE_BYTES + 123] = ord("y")
-            for path, body in ((path_a, body_a), (path_b, body_b)):
-                with open(path, "wb") as file_obj:
-                    file_obj.write(body)
-            stat_a = os.stat(path_a)
-            stat_b = os.stat(path_b)
-            sparse_hash = dedup.get_fast_multichunk_hash(path_a, stat_a.st_size)
-            self.assertEqual(sparse_hash, dedup.get_fast_multichunk_hash(path_b, stat_b.st_size))
+            path_a, path_b, size = self.make_sparse_collision_pair(temp_dir)
             group = dedup.DuplicateGroup(
-                sparse_hash,
+                dedup.get_fast_multichunk_hash(path_a, size),
                 (
-                    dedup.FileInfo(path_a, stat_a.st_size, stat_a.st_mtime_ns),
-                    dedup.FileInfo(path_b, stat_b.st_size, stat_b.st_mtime_ns),
+                    dedup.FileInfo(path_a, size, os.stat(path_a).st_mtime_ns),
+                    dedup.FileInfo(path_b, size, os.stat(path_b).st_mtime_ns),
                 ),
                 "fast-test",
             )
 
-            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            errors = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(errors):
                 result = dedup.trash_files([path_b], [group], dry_run=True)
 
-        self.assertEqual(result.skipped, 1)
-        self.assertEqual(result.trashed, 0)
+            self.assertEqual(result.skipped, 1)
+            self.assertEqual(result.trashed, 0)
+            self.assertIn("no exact kept duplicate", errors.getvalue())
+            # A skip counter also reads 1 if the file was deleted anyway.
+            self.assertTrue(os.path.exists(path_a))
+            self.assertTrue(os.path.exists(path_b))
 
     def test_full_hash_preloader_restricts_to_selected_paths_and_peers(self):
         paths = [f"/tmp/f{i}.bin" for i in range(3)]
@@ -817,6 +908,132 @@ class TrashSafetyTests(unittest.TestCase):
         preloader = dedup.FullHashPreloader([group])
         preloader.restrict_to({paths[1]})
         self.assertEqual(list(preloader.pending.keys()), [paths[1]])
+
+    def make_sparse_collision_pair(self, temp_dir):
+        """Two same-size files agreeing at every sampled offset, differing once.
+
+        Not a cryptographic collision: the sparse prefilter reads only a few
+        64 KB windows, so any byte in the gaps between them is invisible to it.
+        """
+        size = 2 * 1024 * 1024
+        covered = [
+            (offset, offset + dedup.FAST_SAMPLE_BYTES)
+            for offset in dedup.iter_sparse_offsets(size)
+        ]
+        gap = None
+        prev_end = covered[0][1]
+        for start, end in covered[1:]:
+            if start > prev_end:
+                gap = prev_end + (start - prev_end) // 2
+                break
+            prev_end = max(prev_end, end)
+        self.assertIsNotNone(gap, "sparse sampling left no gap to exploit")
+        self.assertFalse(any(start <= gap < end for start, end in covered))
+
+        body = bytearray(b"\x11" * size)
+        path_a = os.path.join(temp_dir, "a.bin")
+        with open(path_a, "wb") as file_obj:
+            file_obj.write(body)
+        body[gap] ^= 0xFF
+        path_b = os.path.join(temp_dir, "b.bin")
+        with open(path_b, "wb") as file_obj:
+            file_obj.write(body)
+
+        self.assertEqual(
+            dedup.get_fast_multichunk_hash(path_a, size),
+            dedup.get_fast_multichunk_hash(path_b, size),
+        )
+        self.assertNotEqual(
+            dedup.get_full_content_hash(path_a), dedup.get_full_content_hash(path_b)
+        )
+        return path_a, path_b, size
+
+    def test_selecting_every_file_in_a_group_leaves_no_keeper(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path_a = os.path.join(temp_dir, "a.bin")
+            path_b = os.path.join(temp_dir, "b.bin")
+            for path in (path_a, path_b):
+                with open(path, "wb") as file_obj:
+                    file_obj.write(b"\x22" * 4096)
+            size = 4096
+            group = dedup.DuplicateGroup(
+                dedup.get_fast_multichunk_hash(path_a, size),
+                (
+                    dedup.FileInfo(path_a, size, os.stat(path_a).st_mtime_ns),
+                    dedup.FileInfo(path_b, size, os.stat(path_b).st_mtime_ns),
+                ),
+                "sparse-test",
+            )
+
+            errors = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(errors):
+                result = dedup.trash_files([path_a, path_b], [group], dry_run=True)
+
+            # Identical content, but every copy was selected: nothing is kept,
+            # so nothing may go.
+            self.assertEqual(result.skipped, 2)
+            self.assertEqual(result.trashed, 0)
+            self.assertIn("no exact kept duplicate", errors.getvalue())
+
+    def test_full_hash_preloader_restrict_to_reports_remaining_bytes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            paths = []
+            for index in range(2):
+                path = os.path.join(temp_dir, f"file{index}.bin")
+                with open(path, "wb") as file_obj:
+                    file_obj.write(b"x" * 100)
+                paths.append(path)
+            group = dedup.DuplicateGroup(
+                "sparse",
+                tuple(dedup.FileInfo(path, 100, os.stat(path).st_mtime_ns) for path in paths),
+                "fast-test",
+            )
+            preloader = dedup.FullHashPreloader([group])
+
+            # restrict_to only re-prioritises; it must not arm the progress
+            # line, because it runs while the browser banner owns the terminal.
+            preloader.restrict_to(set(paths))
+            self.assertFalse(preloader.report_progress)
+
+            self.assertEqual(preloader.begin_progress(), 200)
+            self.assertTrue(preloader.report_progress)
+
+            # Boundary: everything already hashed during review means no
+            # remaining work, so no progress line should be armed.
+            for path in paths:
+                preloader.get(path)
+            self.assertEqual(preloader.begin_progress(), 0)
+            self.assertFalse(preloader.report_progress)
+
+    def test_full_hash_preloader_get_returns_after_worker_thread_crash(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = os.path.join(temp_dir, "file.bin")
+            with open(path, "wb") as file_obj:
+                file_obj.write(b"payload")
+            group = dedup.DuplicateGroup(
+                "sparse",
+                (dedup.FileInfo(path, 7, os.stat(path).st_mtime_ns),),
+                "fast-test",
+            )
+            preloader = dedup.FullHashPreloader([group])
+            preloader._compute_full_hash_entry = lambda _path: (_ for _ in ()).throw(
+                RuntimeError("boom")
+            )
+            preloader.start()
+            preloader.thread.join(timeout=5)
+
+            self.assertNotIn(path, preloader.in_flight)
+
+            # Bounded so a regression (worker dies holding in_flight) fails the
+            # test instead of blocking the suite in get()'s wait loop.
+            outcome = []
+            getter = threading.Thread(
+                target=lambda: outcome.append(preloader.get(path)), daemon=True
+            )
+            getter.start()
+            getter.join(timeout=5)
+            self.assertFalse(getter.is_alive(), "get() blocked after worker crash")
+            self.assertEqual(outcome, [None])
 
     def test_full_hash_preloader_recomputes_stale_cached_hash(self):
         with tempfile.TemporaryDirectory() as temp_dir:

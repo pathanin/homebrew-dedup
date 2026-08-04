@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import stat
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import urllib.parse
 import urllib.request
@@ -59,14 +60,66 @@ THUMBNAIL_QUALITY = 4
 MIN_VIDEO_HOVER_THUMBNAILS = 4
 MAX_VIDEO_HOVER_THUMBNAILS = 12
 VIDEO_MULTI_THUMBNAIL_SECONDS = 15
-FAST_HASH_NAME = "blake2b"
-FULL_HASH_NAME = "blake2b"
+BASELINE_HASH_NAME = "blake2b"
+ACCELERATED_HASH_NAME = "sha256"
+HASH_PROBE_BYTES = 4194304
+HASH_PROBE_ROUNDS = 3
+HASH_PROBE_MARGIN = 1.15
+
+
+def make_hasher(hash_name):
+    try:
+        return hashlib.new(hash_name, usedforsecurity=False)
+    except TypeError:
+        return hashlib.new(hash_name)
+
+
+def _probe_hash_seconds(hash_name, payload, rounds=HASH_PROBE_ROUNDS):
+    # Best-of-N, not mean: the fastest run is the one least disturbed by
+    # other load, which is what we want to compare.
+    best = None
+    for _ in range(rounds):
+        hasher = make_hasher(hash_name)
+        start = time.perf_counter()
+        hasher.update(payload)
+        elapsed = time.perf_counter() - start
+        if best is None or elapsed < best:
+            best = elapsed
+    return best
+
+
+def select_hash_name(probe_bytes=HASH_PROBE_BYTES, margin=HASH_PROBE_MARGIN):
+    """Pick sha256 only on CPUs that accelerate it, else blake2b.
+
+    hashlib routes sha256 through OpenSSL, so it runs about 2x blake2b
+    where the CPU has SHA extensions (ARMv8 crypto, x86 SHA-NI) and about
+    0.5x where it does not. Platform strings do not reliably report those
+    extensions, so measure instead. Costs roughly 10 ms at import.
+    """
+    payload = b"\xa5" * probe_bytes
+    try:
+        baseline = _probe_hash_seconds(BASELINE_HASH_NAME, payload)
+        accelerated = _probe_hash_seconds(ACCELERATED_HASH_NAME, payload)
+    except (ValueError, TypeError):
+        # An algorithm missing from this build: blake2b is always present.
+        return BASELINE_HASH_NAME
+    if not baseline or not accelerated:
+        return BASELINE_HASH_NAME
+    # Require a clear win, so timing noise never flips the choice.
+    if baseline / accelerated >= margin:
+        return ACCELERATED_HASH_NAME
+    return BASELINE_HASH_NAME
+
+
+FULL_HASH_NAME = select_hash_name()
+FAST_HASH_NAME = FULL_HASH_NAME
 MACOS_TRASH_CMD = shutil.which("trash")
 FAST_SAMPLE_BYTES = 65536
 MIN_FAST_SAMPLE_COUNT = 8
 MAX_FAST_SAMPLE_COUNT = 64
 SMALL_FILE_FULL_HASH_BYTES = 1048576  # 1MB — small files get full hash
 FULL_HASH_CHUNK_BYTES = 1048576
+EXACT_VERIFY_PROGRESS_INTERVAL = 0.25
 RANGE_SERVE_CHUNK_BYTES = 65536
 SUBPROCESS_SEMAPHORE = threading.Semaphore(4)
 THUMBNAIL_SUBPROCESS_SEMAPHORE = threading.Semaphore(8)
@@ -676,13 +729,6 @@ def describe_original_reason(info, group_files, original):
     return "path tiebreak"
 
 
-def make_hasher(hash_name):
-    try:
-        return hashlib.new(hash_name, usedforsecurity=False)
-    except TypeError:
-        return hashlib.new(hash_name)
-
-
 def make_fast_hasher():
     return make_hasher(FAST_HASH_NAME)
 
@@ -812,6 +858,15 @@ def print_progress(label, done, total=None, stats=None):
         )
     else:
         print(f"\r[{label}] {done}", end="", flush=True)
+
+
+def print_byte_progress(label, done, total):
+    percent = (done / total) * 100 if total else 100.0
+    print(
+        f"\r[{label}] {format_size(done)}/{format_size(total)} ({percent:.1f}%)",
+        end="",
+        flush=True,
+    )
 
 
 def finish_progress():
@@ -2991,6 +3046,9 @@ class BrowserSelectionState:
             for file_info in group["files"]
         }
         self.selected_paths = []
+        # Called on the HTTP thread with the confirmed paths, before the main
+        # thread is woken. Lets background work start during server teardown.
+        self.on_confirm = None
         self.done = threading.Event()
         self.thumbnail_cache = ThumbnailCache()
         self.cache_lock = threading.Lock()
@@ -3207,6 +3265,13 @@ def make_browser_handler(state):
                     return
                 state.selected_paths = [] if payload.get("cancelled") else sanitize_browser_trash_selection(state.groups, payload.get("trashIds", []))
                 state._submitted = True
+                if state.on_confirm is not None:
+                    try:
+                        state.on_confirm(list(state.selected_paths))
+                    except Exception:
+                        # Never let a background-work hook strand the user in
+                        # the UI: the selection itself is already recorded.
+                        pass
                 state.done.set()
             self.send_json({"ok": True, "selected": len(state.selected_paths)})
 
@@ -3366,8 +3431,18 @@ def _run_browser_session(state, handler_factory, url_label, cleanup=None, port=7
     return state.selected_paths
 
 
-def select_files_in_browser(duplicate_groups, require_move_confirmation=False, port=7979):
+def select_files_in_browser(
+    duplicate_groups, require_move_confirmation=False, port=7979, full_hash_preloader=None
+):
     state = BrowserSelectionState(duplicate_groups, require_move_confirmation)
+    if full_hash_preloader is not None:
+        # Re-point the preloader at the confirmed selection immediately, so it
+        # stops hashing candidates we no longer care about and starts on the
+        # ones we must verify — all while the server shuts down and the
+        # terminal is refocused, which takes a noticeable moment on macOS.
+        state.on_confirm = lambda paths: full_hash_preloader.restrict_to(
+            exact_hash_paths_for_selection(paths, duplicate_groups)
+        )
     # Warm thumbnail cache in background so first paint is instant.
     threading.Thread(
         target=_warm_thumbnails,
@@ -3768,6 +3843,14 @@ class FullHashPreloader:
         self.stop_all = False
         self.condition = threading.Condition()
         self.thread = None
+        # Progress reporting stays off during browser review: the preloader is
+        # a background thread and the terminal belongs to the server banner.
+        # restrict_to() turns it on for the foreground verification phase.
+        self.report_progress = False
+        self.progress_total = 0
+        self.progress_done = 0
+        self.progress_printed = False
+        self.progress_last_print = 0.0
 
     def _compute_full_hash_entry(self, path):
         try:
@@ -3788,6 +3871,7 @@ class FullHashPreloader:
                     if not chunk:
                         break
                     hasher.update(chunk)
+                    self._note_progress(len(chunk))
         except OSError:
             return None
         try:
@@ -3816,6 +3900,41 @@ class FullHashPreloader:
             return None
         return digest
 
+    def _note_progress(self, byte_count):
+        # report_progress is read without the lock; it only ever flips
+        # False→True, so a stale read costs at most one unreported chunk.
+        if not self.report_progress:
+            return
+        with self.condition:
+            self.progress_done += byte_count
+            now = time.monotonic()
+            if now - self.progress_last_print < EXACT_VERIFY_PROGRESS_INTERVAL:
+                return
+            self.progress_last_print = now
+            self.progress_printed = True
+            print_byte_progress(
+                "exact verify",
+                min(self.progress_done, self.progress_total),
+                self.progress_total,
+            )
+
+    def finish_progress(self):
+        # Reports 100% rather than progress_done: bytes read before
+        # restrict_to() armed the counter are not in progress_total, so a
+        # completed pass lands short of the total.
+        self._close_progress_line(self.progress_total)
+
+    def _close_progress_line(self, done=None):
+        with self.condition:
+            if not self.progress_printed:
+                self.report_progress = False
+                return
+            self.progress_printed = False
+            self.report_progress = False
+            if done is not None:
+                print_byte_progress("exact verify", done, self.progress_total)
+        finish_progress()
+
     def _should_abort_path(self, path):
         # Reads stop_all and allowed_paths without the lock; both flags only
         # transition one way (False→True, None→set), so a stale read at most
@@ -3832,6 +3951,15 @@ class FullHashPreloader:
         self.thread.start()
 
     def restrict_to(self, paths):
+        """Narrow the preload set to `paths`, abandoning every other candidate.
+
+        Pure bookkeeping, so it is safe to call from the HTTP thread the
+        moment the user confirms. The worker checks allowed_paths every
+        chunk, so it drops an unrelated in-progress file within ~1 MB
+        instead of finishing it. Progress reporting stays off until
+        begin_progress(): the terminal still belongs to the browser
+        session banner at confirm time.
+        """
         with self.condition:
             allowed = set(paths)
             self.allowed_paths = allowed
@@ -3840,11 +3968,37 @@ class FullHashPreloader:
                     del self.pending[path]
             self.condition.notify_all()
 
+    def begin_progress(self):
+        """Arm the progress line and return the bytes still left to read.
+
+        Called once the terminal is free. The total is measured here, not
+        at restrict_to() time, so it excludes whatever the worker managed
+        to finish in between.
+        """
+        with self.condition:
+            remaining = 0
+            for path in self.allowed_paths or ():
+                if self._entry_digest_if_current(path, self.cache.get(path)):
+                    continue
+                try:
+                    remaining += os.stat(path, follow_symlinks=False).st_size
+                except OSError:
+                    pass
+            self.progress_total = remaining
+            self.progress_done = 0
+            self.progress_printed = False
+            self.progress_last_print = time.monotonic()
+            self.report_progress = remaining > 0
+        return remaining
+
     def stop(self):
         with self.condition:
             self.stop_all = True
             self.pending.clear()
             self.condition.notify_all()
+        # Close any open \r progress line so an early exit or a traceback does
+        # not print on top of it.
+        self._close_progress_line()
         if self.thread is not None:
             self.thread.join(timeout=2)
 
@@ -3870,14 +4024,21 @@ class FullHashPreloader:
                         return
                     self.condition.wait(timeout=0.2)
                     continue
-            entry = self._compute_full_hash_entry(path)
-            with self.condition:
-                if entry:
-                    self.cache[path] = entry
-                else:
-                    self.failed.add(path)
-                self.in_flight.discard(path)
-                self.condition.notify_all()
+            entry = None
+            try:
+                entry = self._compute_full_hash_entry(path)
+            except Exception:
+                # Never let this thread die with `path` still in in_flight:
+                # get() waits on that set and would block forever.
+                entry = None
+            finally:
+                with self.condition:
+                    if entry:
+                        self.cache[path] = entry
+                    else:
+                        self.failed.add(path)
+                    self.in_flight.discard(path)
+                    self.condition.notify_all()
 
     def get(self, path):
         while True:
@@ -3895,14 +4056,19 @@ class FullHashPreloader:
                 self.pending.pop(path, None)
                 self.in_flight.add(path)
                 break
-        entry = self._compute_full_hash_entry(path)
-        with self.condition:
-            if entry:
-                self.cache[path] = entry
-            else:
-                self.failed.add(path)
-            self.in_flight.discard(path)
-            self.condition.notify_all()
+        entry = None
+        try:
+            entry = self._compute_full_hash_entry(path)
+        except Exception:
+            entry = None
+        finally:
+            with self.condition:
+                if entry:
+                    self.cache[path] = entry
+                else:
+                    self.failed.add(path)
+                self.in_flight.discard(path)
+                self.condition.notify_all()
         return entry[2] if entry else None
 
 
@@ -4231,11 +4397,16 @@ def trash_files(
     full_hash_cache = {}
     if full_hash_preloader is not None:
         needed_hashes = exact_hash_paths_for_selection(files, groups)
+        # Normally the browser handler already did this at confirm time; repeat
+        # it for callers that run without the review UI.
         full_hash_preloader.restrict_to(needed_hashes)
+        remaining_bytes = full_hash_preloader.begin_progress()
         if needed_hashes:
+            suffix = f" — {format_size(remaining_bytes)} left to read" if remaining_bytes else ""
             print(
                 f"Completing exact verification for {len(needed_hashes)} file(s) "
-                "from the reviewed selection..."
+                f"from the reviewed selection...{suffix}",
+                flush=True,
             )
     send_to_trash = None
     if not dry_run:
@@ -4266,6 +4437,9 @@ def trash_files(
             result.skipped += 1
             continue
         validated_paths.append(path)
+
+    if full_hash_preloader is not None:
+        full_hash_preloader.finish_progress()
 
     if dry_run:
         for path in validated_paths:
@@ -4704,6 +4878,7 @@ def find_and_process_duplicates(argv=None):
             duplicate_groups,
             require_move_confirmation=not dry_run and not args.yes,
             port=args.port,
+            full_hash_preloader=full_hash_preloader,
         )
         print("-" * 60)
         if not files_to_trash:
