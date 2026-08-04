@@ -871,33 +871,26 @@ class TrashSafetyTests(unittest.TestCase):
 
     def test_fast_mode_selection_requires_exact_kept_duplicate(self):
         with tempfile.TemporaryDirectory() as temp_dir:
-            path_a = os.path.join(temp_dir, "a.bin")
-            path_b = os.path.join(temp_dir, "b.bin")
-            size = dedup.SMALL_FILE_FULL_HASH_BYTES + dedup.FAST_SAMPLE_BYTES * 3
-            body_a = bytearray(b"x" * size)
-            body_b = bytearray(body_a)
-            body_b[dedup.FAST_SAMPLE_BYTES + 123] = ord("y")
-            for path, body in ((path_a, body_a), (path_b, body_b)):
-                with open(path, "wb") as file_obj:
-                    file_obj.write(body)
-            stat_a = os.stat(path_a)
-            stat_b = os.stat(path_b)
-            sparse_hash = dedup.get_fast_multichunk_hash(path_a, stat_a.st_size)
-            self.assertEqual(sparse_hash, dedup.get_fast_multichunk_hash(path_b, stat_b.st_size))
+            path_a, path_b, size = self.make_sparse_collision_pair(temp_dir)
             group = dedup.DuplicateGroup(
-                sparse_hash,
+                dedup.get_fast_multichunk_hash(path_a, size),
                 (
-                    dedup.FileInfo(path_a, stat_a.st_size, stat_a.st_mtime_ns),
-                    dedup.FileInfo(path_b, stat_b.st_size, stat_b.st_mtime_ns),
+                    dedup.FileInfo(path_a, size, os.stat(path_a).st_mtime_ns),
+                    dedup.FileInfo(path_b, size, os.stat(path_b).st_mtime_ns),
                 ),
                 "fast-test",
             )
 
-            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            errors = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(errors):
                 result = dedup.trash_files([path_b], [group], dry_run=True)
 
-        self.assertEqual(result.skipped, 1)
-        self.assertEqual(result.trashed, 0)
+            self.assertEqual(result.skipped, 1)
+            self.assertEqual(result.trashed, 0)
+            self.assertIn("no exact kept duplicate", errors.getvalue())
+            # A skip counter also reads 1 if the file was deleted anyway.
+            self.assertTrue(os.path.exists(path_a))
+            self.assertTrue(os.path.exists(path_b))
 
     def test_full_hash_preloader_restricts_to_selected_paths_and_peers(self):
         paths = [f"/tmp/f{i}.bin" for i in range(3)]
@@ -954,30 +947,6 @@ class TrashSafetyTests(unittest.TestCase):
             dedup.get_full_content_hash(path_a), dedup.get_full_content_hash(path_b)
         )
         return path_a, path_b, size
-
-    def test_sparse_false_positive_is_caught_before_trashing(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            path_a, path_b, size = self.make_sparse_collision_pair(temp_dir)
-            sparse_label = "sparse-test"
-            group = dedup.DuplicateGroup(
-                dedup.get_fast_multichunk_hash(path_a, size),
-                (
-                    dedup.FileInfo(path_a, size, os.stat(path_a).st_mtime_ns),
-                    dedup.FileInfo(path_b, size, os.stat(path_b).st_mtime_ns),
-                ),
-                sparse_label,
-            )
-
-            errors = io.StringIO()
-            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(errors):
-                result = dedup.trash_files([path_b], [group], dry_run=True)
-
-            self.assertEqual(result.skipped, 1)
-            self.assertEqual(result.trashed, 0)
-            self.assertIn("no exact kept duplicate", errors.getvalue())
-            # The whole point: neither file may be touched.
-            self.assertTrue(os.path.exists(path_a))
-            self.assertTrue(os.path.exists(path_b))
 
     def test_selecting_every_file_in_a_group_leaves_no_keeper(self):
         with tempfile.TemporaryDirectory() as temp_dir:
