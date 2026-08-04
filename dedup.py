@@ -3046,6 +3046,9 @@ class BrowserSelectionState:
             for file_info in group["files"]
         }
         self.selected_paths = []
+        # Called on the HTTP thread with the confirmed paths, before the main
+        # thread is woken. Lets background work start during server teardown.
+        self.on_confirm = None
         self.done = threading.Event()
         self.thumbnail_cache = ThumbnailCache()
         self.cache_lock = threading.Lock()
@@ -3262,6 +3265,13 @@ def make_browser_handler(state):
                     return
                 state.selected_paths = [] if payload.get("cancelled") else sanitize_browser_trash_selection(state.groups, payload.get("trashIds", []))
                 state._submitted = True
+                if state.on_confirm is not None:
+                    try:
+                        state.on_confirm(list(state.selected_paths))
+                    except Exception:
+                        # Never let a background-work hook strand the user in
+                        # the UI: the selection itself is already recorded.
+                        pass
                 state.done.set()
             self.send_json({"ok": True, "selected": len(state.selected_paths)})
 
@@ -3421,8 +3431,18 @@ def _run_browser_session(state, handler_factory, url_label, cleanup=None, port=7
     return state.selected_paths
 
 
-def select_files_in_browser(duplicate_groups, require_move_confirmation=False, port=7979):
+def select_files_in_browser(
+    duplicate_groups, require_move_confirmation=False, port=7979, full_hash_preloader=None
+):
     state = BrowserSelectionState(duplicate_groups, require_move_confirmation)
+    if full_hash_preloader is not None:
+        # Re-point the preloader at the confirmed selection immediately, so it
+        # stops hashing candidates we no longer care about and starts on the
+        # ones we must verify — all while the server shuts down and the
+        # terminal is refocused, which takes a noticeable moment on macOS.
+        state.on_confirm = lambda paths: full_hash_preloader.restrict_to(
+            exact_hash_paths_for_selection(paths, duplicate_groups)
+        )
     # Warm thumbnail cache in background so first paint is instant.
     threading.Thread(
         target=_warm_thumbnails,
@@ -3931,10 +3951,14 @@ class FullHashPreloader:
         self.thread.start()
 
     def restrict_to(self, paths):
-        """Narrow the preload set to `paths` and return the bytes left to read.
+        """Narrow the preload set to `paths`, abandoning every other candidate.
 
-        The returned total excludes anything already hashed during review, so
-        callers can tell the difference between "instant" and "reads 36 GB".
+        Pure bookkeeping, so it is safe to call from the HTTP thread the
+        moment the user confirms. The worker checks allowed_paths every
+        chunk, so it drops an unrelated in-progress file within ~1 MB
+        instead of finishing it. Progress reporting stays off until
+        begin_progress(): the terminal still belongs to the browser
+        session banner at confirm time.
         """
         with self.condition:
             allowed = set(paths)
@@ -3942,8 +3966,18 @@ class FullHashPreloader:
             for path in list(self.pending):
                 if path not in allowed:
                     del self.pending[path]
+            self.condition.notify_all()
+
+    def begin_progress(self):
+        """Arm the progress line and return the bytes still left to read.
+
+        Called once the terminal is free. The total is measured here, not
+        at restrict_to() time, so it excludes whatever the worker managed
+        to finish in between.
+        """
+        with self.condition:
             remaining = 0
-            for path in allowed:
+            for path in self.allowed_paths or ():
                 if self._entry_digest_if_current(path, self.cache.get(path)):
                     continue
                 try:
@@ -3955,7 +3989,6 @@ class FullHashPreloader:
             self.progress_printed = False
             self.progress_last_print = time.monotonic()
             self.report_progress = remaining > 0
-            self.condition.notify_all()
         return remaining
 
     def stop(self):
@@ -4364,7 +4397,10 @@ def trash_files(
     full_hash_cache = {}
     if full_hash_preloader is not None:
         needed_hashes = exact_hash_paths_for_selection(files, groups)
-        remaining_bytes = full_hash_preloader.restrict_to(needed_hashes)
+        # Normally the browser handler already did this at confirm time; repeat
+        # it for callers that run without the review UI.
+        full_hash_preloader.restrict_to(needed_hashes)
+        remaining_bytes = full_hash_preloader.begin_progress()
         if needed_hashes:
             suffix = f" — {format_size(remaining_bytes)} left to read" if remaining_bytes else ""
             print(
@@ -4842,6 +4878,7 @@ def find_and_process_duplicates(argv=None):
             duplicate_groups,
             require_move_confirmation=not dry_run and not args.yes,
             port=args.port,
+            full_hash_preloader=full_hash_preloader,
         )
         print("-" * 60)
         if not files_to_trash:

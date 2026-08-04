@@ -614,6 +614,70 @@ class BrowserHelperTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=2)
 
+    def post_selection(self, state, on_confirm):
+        state.on_confirm = on_confirm
+        try:
+            server = ThreadingHTTPServer(("127.0.0.1", 0), dedup.make_browser_handler(state))
+        except PermissionError:
+            self.skipTest("loopback bind not permitted")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            base_url = f"http://127.0.0.1:{server.server_port}"
+            token = state.session_id
+            with urllib.request.urlopen(f"{base_url}/api/groups?token={token}") as response:
+                groups = json.loads(response.read().decode("utf-8"))["groups"]
+            request = urllib.request.Request(
+                f"{base_url}/api/selection?token={token}",
+                data=json.dumps({"trashIds": [groups[0]["files"][1]["id"]]}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request) as response:
+                return json.loads(response.read().decode("utf-8"))
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def make_selection_state(self):
+        group = dedup.DuplicateGroup(
+            "abc",
+            (
+                dedup.FileInfo("/tmp/photo.jpg", 4, 1),
+                dedup.FileInfo("/tmp/photo copy.jpg", 4, 2),
+            ),
+        )
+        return dedup.BrowserSelectionState([group])
+
+    def test_confirm_hook_runs_before_the_main_thread_is_woken(self):
+        state = self.make_selection_state()
+        seen = {}
+
+        def on_confirm(paths):
+            # The point of the hook: background work is re-prioritised while
+            # the main thread is still parked, not after teardown.
+            seen["done_already_set"] = state.done.is_set()
+            seen["paths"] = paths
+
+        result = self.post_selection(state, on_confirm)
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(seen["done_already_set"])
+        self.assertEqual(seen["paths"], ["/tmp/photo copy.jpg"])
+
+    def test_confirm_hook_failure_does_not_strand_the_selection(self):
+        state = self.make_selection_state()
+
+        def on_confirm(paths):
+            raise RuntimeError("boom")
+
+        result = self.post_selection(state, on_confirm)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(state.done.is_set())
+        self.assertEqual(state.selected_paths, ["/tmp/photo copy.jpg"])
+
     def test_browser_handler_serves_lazy_video_metadata(self):
         group = dedup.DuplicateGroup(
             "abc",
@@ -867,14 +931,19 @@ class TrashSafetyTests(unittest.TestCase):
             )
             preloader = dedup.FullHashPreloader([group])
 
-            self.assertEqual(preloader.restrict_to(set(paths)), 200)
+            # restrict_to only re-prioritises; it must not arm the progress
+            # line, because it runs while the browser banner owns the terminal.
+            preloader.restrict_to(set(paths))
+            self.assertFalse(preloader.report_progress)
+
+            self.assertEqual(preloader.begin_progress(), 200)
             self.assertTrue(preloader.report_progress)
 
             # Boundary: everything already hashed during review means no
             # remaining work, so no progress line should be armed.
             for path in paths:
                 preloader.get(path)
-            self.assertEqual(preloader.restrict_to(set(paths)), 0)
+            self.assertEqual(preloader.begin_progress(), 0)
             self.assertFalse(preloader.report_progress)
 
     def test_full_hash_preloader_get_returns_after_worker_thread_crash(self):
