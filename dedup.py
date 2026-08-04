@@ -3855,12 +3855,20 @@ class FullHashPreloader:
             )
 
     def finish_progress(self):
+        # Reports 100% rather than progress_done: bytes read before
+        # restrict_to() armed the counter are not in progress_total, so a
+        # completed pass lands short of the total.
+        self._close_progress_line(self.progress_total)
+
+    def _close_progress_line(self, done=None):
         with self.condition:
             if not self.progress_printed:
+                self.report_progress = False
                 return
             self.progress_printed = False
             self.report_progress = False
-            print_byte_progress("exact verify", self.progress_total, self.progress_total)
+            if done is not None:
+                print_byte_progress("exact verify", done, self.progress_total)
         finish_progress()
 
     def _should_abort_path(self, path):
@@ -3909,9 +3917,11 @@ class FullHashPreloader:
     def stop(self):
         with self.condition:
             self.stop_all = True
-            self.report_progress = False
             self.pending.clear()
             self.condition.notify_all()
+        # Close any open \r progress line so an early exit or a traceback does
+        # not print on top of it.
+        self._close_progress_line()
         if self.thread is not None:
             self.thread.join(timeout=2)
 
