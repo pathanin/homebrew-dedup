@@ -916,6 +916,96 @@ class TrashSafetyTests(unittest.TestCase):
         preloader.restrict_to({paths[1]})
         self.assertEqual(list(preloader.pending.keys()), [paths[1]])
 
+    def make_sparse_collision_pair(self, temp_dir):
+        """Two same-size files agreeing at every sampled offset, differing once.
+
+        Not a cryptographic collision: the sparse prefilter reads only a few
+        64 KB windows, so any byte in the gaps between them is invisible to it.
+        """
+        size = 2 * 1024 * 1024
+        covered = [
+            (offset, offset + dedup.FAST_SAMPLE_BYTES)
+            for offset in dedup.iter_sparse_offsets(size)
+        ]
+        gap = None
+        prev_end = covered[0][1]
+        for start, end in covered[1:]:
+            if start > prev_end:
+                gap = prev_end + (start - prev_end) // 2
+                break
+            prev_end = max(prev_end, end)
+        self.assertIsNotNone(gap, "sparse sampling left no gap to exploit")
+        self.assertFalse(any(start <= gap < end for start, end in covered))
+
+        body = bytearray(b"\x11" * size)
+        path_a = os.path.join(temp_dir, "a.bin")
+        with open(path_a, "wb") as file_obj:
+            file_obj.write(body)
+        body[gap] ^= 0xFF
+        path_b = os.path.join(temp_dir, "b.bin")
+        with open(path_b, "wb") as file_obj:
+            file_obj.write(body)
+
+        self.assertEqual(
+            dedup.get_fast_multichunk_hash(path_a, size),
+            dedup.get_fast_multichunk_hash(path_b, size),
+        )
+        self.assertNotEqual(
+            dedup.get_full_content_hash(path_a), dedup.get_full_content_hash(path_b)
+        )
+        return path_a, path_b, size
+
+    def test_sparse_false_positive_is_caught_before_trashing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path_a, path_b, size = self.make_sparse_collision_pair(temp_dir)
+            sparse_label = "sparse-test"
+            group = dedup.DuplicateGroup(
+                dedup.get_fast_multichunk_hash(path_a, size),
+                (
+                    dedup.FileInfo(path_a, size, os.stat(path_a).st_mtime_ns),
+                    dedup.FileInfo(path_b, size, os.stat(path_b).st_mtime_ns),
+                ),
+                sparse_label,
+            )
+
+            errors = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(errors):
+                result = dedup.trash_files([path_b], [group], dry_run=True)
+
+            self.assertEqual(result.skipped, 1)
+            self.assertEqual(result.trashed, 0)
+            self.assertIn("no exact kept duplicate", errors.getvalue())
+            # The whole point: neither file may be touched.
+            self.assertTrue(os.path.exists(path_a))
+            self.assertTrue(os.path.exists(path_b))
+
+    def test_selecting_every_file_in_a_group_leaves_no_keeper(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path_a = os.path.join(temp_dir, "a.bin")
+            path_b = os.path.join(temp_dir, "b.bin")
+            for path in (path_a, path_b):
+                with open(path, "wb") as file_obj:
+                    file_obj.write(b"\x22" * 4096)
+            size = 4096
+            group = dedup.DuplicateGroup(
+                dedup.get_fast_multichunk_hash(path_a, size),
+                (
+                    dedup.FileInfo(path_a, size, os.stat(path_a).st_mtime_ns),
+                    dedup.FileInfo(path_b, size, os.stat(path_b).st_mtime_ns),
+                ),
+                "sparse-test",
+            )
+
+            errors = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(errors):
+                result = dedup.trash_files([path_a, path_b], [group], dry_run=True)
+
+            # Identical content, but every copy was selected: nothing is kept,
+            # so nothing may go.
+            self.assertEqual(result.skipped, 2)
+            self.assertEqual(result.trashed, 0)
+            self.assertIn("no exact kept duplicate", errors.getvalue())
+
     def test_full_hash_preloader_restrict_to_reports_remaining_bytes(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             paths = []
