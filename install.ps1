@@ -211,8 +211,18 @@ try {
     Write-Host "Release page: $releasePageUrl"
     Write-Host 'Reopen other terminals to pick up the PATH change.'
 } catch {
-    Write-Error $_.Exception.Message
-    exit 1
+    # Never call `exit` unconditionally here. The one-liner install runs this
+    # script inside the caller's own session (irm | iex), where `exit` would
+    # close their terminal instead of reporting the failure. $PSCommandPath is
+    # set only when running as a real file, which is where a non-zero exit
+    # code is what callers expect.
+    $message = $_.Exception.Message
+    if ($PSCommandPath) {
+        Write-Error $message
+        exit 1
+    }
+
+    throw $message
 } finally {
     if (Test-Path $tempZip) {
         Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
