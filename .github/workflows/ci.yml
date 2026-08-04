@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 3.8 is the floor claimed in CLAUDE.md. It has no arm64 build, so it
+          # runs on Linux only.
+          - os: ubuntu-latest
+            python: "3.8"
+          - os: ubuntu-latest
+            python: "3.12"
+          - os: ubuntu-latest
+            python: "3.13"
+          # 3.12 is what Formula/dedup.rb pins, so it is the shipped runtime.
+          - os: macos-latest
+            python: "3.12"
+          - os: macos-latest
+            python: "3.13"
+          - os: windows-latest
+            python: "3.12"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      # No install step on purpose: dedup.py is standard library only, and the
+      # suite mocks send2trash rather than importing it. If a test ever needs a
+      # real dependency, add it here rather than making the suite skip.
+      - name: Run tests
+        run: python -m unittest test_dedup
+
+      # Mirrors the `test do` block in Formula/dedup.rb, minus the send2trash
+      # import, which the formula's own venv provides.
+      - name: CLI smoke test
+        run: |
+          python dedup.py --help
+          python dedup.py --smoke-test-browser
