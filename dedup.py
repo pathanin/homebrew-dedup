@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import stat
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import urllib.parse
 import urllib.request
@@ -67,6 +68,7 @@ MIN_FAST_SAMPLE_COUNT = 8
 MAX_FAST_SAMPLE_COUNT = 64
 SMALL_FILE_FULL_HASH_BYTES = 1048576  # 1MB — small files get full hash
 FULL_HASH_CHUNK_BYTES = 1048576
+EXACT_VERIFY_PROGRESS_INTERVAL = 0.25
 RANGE_SERVE_CHUNK_BYTES = 65536
 SUBPROCESS_SEMAPHORE = threading.Semaphore(4)
 THUMBNAIL_SUBPROCESS_SEMAPHORE = threading.Semaphore(8)
@@ -812,6 +814,15 @@ def print_progress(label, done, total=None, stats=None):
         )
     else:
         print(f"\r[{label}] {done}", end="", flush=True)
+
+
+def print_byte_progress(label, done, total):
+    percent = (done / total) * 100 if total else 100.0
+    print(
+        f"\r[{label}] {format_size(done)}/{format_size(total)} ({percent:.1f}%)",
+        end="",
+        flush=True,
+    )
 
 
 def finish_progress():
@@ -3768,6 +3779,14 @@ class FullHashPreloader:
         self.stop_all = False
         self.condition = threading.Condition()
         self.thread = None
+        # Progress reporting stays off during browser review: the preloader is
+        # a background thread and the terminal belongs to the server banner.
+        # restrict_to() turns it on for the foreground verification phase.
+        self.report_progress = False
+        self.progress_total = 0
+        self.progress_done = 0
+        self.progress_printed = False
+        self.progress_last_print = 0.0
 
     def _compute_full_hash_entry(self, path):
         try:
@@ -3788,6 +3807,7 @@ class FullHashPreloader:
                     if not chunk:
                         break
                     hasher.update(chunk)
+                    self._note_progress(len(chunk))
         except OSError:
             return None
         try:
@@ -3816,6 +3836,33 @@ class FullHashPreloader:
             return None
         return digest
 
+    def _note_progress(self, byte_count):
+        # report_progress is read without the lock; it only ever flips
+        # False→True, so a stale read costs at most one unreported chunk.
+        if not self.report_progress:
+            return
+        with self.condition:
+            self.progress_done += byte_count
+            now = time.monotonic()
+            if now - self.progress_last_print < EXACT_VERIFY_PROGRESS_INTERVAL:
+                return
+            self.progress_last_print = now
+            self.progress_printed = True
+            print_byte_progress(
+                "exact verify",
+                min(self.progress_done, self.progress_total),
+                self.progress_total,
+            )
+
+    def finish_progress(self):
+        with self.condition:
+            if not self.progress_printed:
+                return
+            self.progress_printed = False
+            self.report_progress = False
+            print_byte_progress("exact verify", self.progress_total, self.progress_total)
+        finish_progress()
+
     def _should_abort_path(self, path):
         # Reads stop_all and allowed_paths without the lock; both flags only
         # transition one way (False→True, None→set), so a stale read at most
@@ -3832,17 +3879,37 @@ class FullHashPreloader:
         self.thread.start()
 
     def restrict_to(self, paths):
+        """Narrow the preload set to `paths` and return the bytes left to read.
+
+        The returned total excludes anything already hashed during review, so
+        callers can tell the difference between "instant" and "reads 36 GB".
+        """
         with self.condition:
             allowed = set(paths)
             self.allowed_paths = allowed
             for path in list(self.pending):
                 if path not in allowed:
                     del self.pending[path]
+            remaining = 0
+            for path in allowed:
+                if self._entry_digest_if_current(path, self.cache.get(path)):
+                    continue
+                try:
+                    remaining += os.stat(path, follow_symlinks=False).st_size
+                except OSError:
+                    pass
+            self.progress_total = remaining
+            self.progress_done = 0
+            self.progress_printed = False
+            self.progress_last_print = time.monotonic()
+            self.report_progress = remaining > 0
             self.condition.notify_all()
+        return remaining
 
     def stop(self):
         with self.condition:
             self.stop_all = True
+            self.report_progress = False
             self.pending.clear()
             self.condition.notify_all()
         if self.thread is not None:
@@ -3870,14 +3937,21 @@ class FullHashPreloader:
                         return
                     self.condition.wait(timeout=0.2)
                     continue
-            entry = self._compute_full_hash_entry(path)
-            with self.condition:
-                if entry:
-                    self.cache[path] = entry
-                else:
-                    self.failed.add(path)
-                self.in_flight.discard(path)
-                self.condition.notify_all()
+            entry = None
+            try:
+                entry = self._compute_full_hash_entry(path)
+            except Exception:
+                # Never let this thread die with `path` still in in_flight:
+                # get() waits on that set and would block forever.
+                entry = None
+            finally:
+                with self.condition:
+                    if entry:
+                        self.cache[path] = entry
+                    else:
+                        self.failed.add(path)
+                    self.in_flight.discard(path)
+                    self.condition.notify_all()
 
     def get(self, path):
         while True:
@@ -3895,14 +3969,19 @@ class FullHashPreloader:
                 self.pending.pop(path, None)
                 self.in_flight.add(path)
                 break
-        entry = self._compute_full_hash_entry(path)
-        with self.condition:
-            if entry:
-                self.cache[path] = entry
-            else:
-                self.failed.add(path)
-            self.in_flight.discard(path)
-            self.condition.notify_all()
+        entry = None
+        try:
+            entry = self._compute_full_hash_entry(path)
+        except Exception:
+            entry = None
+        finally:
+            with self.condition:
+                if entry:
+                    self.cache[path] = entry
+                else:
+                    self.failed.add(path)
+                self.in_flight.discard(path)
+                self.condition.notify_all()
         return entry[2] if entry else None
 
 
@@ -4231,11 +4310,13 @@ def trash_files(
     full_hash_cache = {}
     if full_hash_preloader is not None:
         needed_hashes = exact_hash_paths_for_selection(files, groups)
-        full_hash_preloader.restrict_to(needed_hashes)
+        remaining_bytes = full_hash_preloader.restrict_to(needed_hashes)
         if needed_hashes:
+            suffix = f" — {format_size(remaining_bytes)} left to read" if remaining_bytes else ""
             print(
                 f"Completing exact verification for {len(needed_hashes)} file(s) "
-                "from the reviewed selection..."
+                f"from the reviewed selection...{suffix}",
+                flush=True,
             )
     send_to_trash = None
     if not dry_run:
@@ -4266,6 +4347,9 @@ def trash_files(
             result.skipped += 1
             continue
         validated_paths.append(path)
+
+    if full_hash_preloader is not None:
+        full_hash_preloader.finish_progress()
 
     if dry_run:
         for path in validated_paths:

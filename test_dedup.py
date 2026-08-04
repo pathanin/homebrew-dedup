@@ -818,6 +818,61 @@ class TrashSafetyTests(unittest.TestCase):
         preloader.restrict_to({paths[1]})
         self.assertEqual(list(preloader.pending.keys()), [paths[1]])
 
+    def test_full_hash_preloader_restrict_to_reports_remaining_bytes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            paths = []
+            for index in range(2):
+                path = os.path.join(temp_dir, f"file{index}.bin")
+                with open(path, "wb") as file_obj:
+                    file_obj.write(b"x" * 100)
+                paths.append(path)
+            group = dedup.DuplicateGroup(
+                "sparse",
+                tuple(dedup.FileInfo(path, 100, os.stat(path).st_mtime_ns) for path in paths),
+                "fast-test",
+            )
+            preloader = dedup.FullHashPreloader([group])
+
+            self.assertEqual(preloader.restrict_to(set(paths)), 200)
+            self.assertTrue(preloader.report_progress)
+
+            # Boundary: everything already hashed during review means no
+            # remaining work, so no progress line should be armed.
+            for path in paths:
+                preloader.get(path)
+            self.assertEqual(preloader.restrict_to(set(paths)), 0)
+            self.assertFalse(preloader.report_progress)
+
+    def test_full_hash_preloader_get_returns_after_worker_thread_crash(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = os.path.join(temp_dir, "file.bin")
+            with open(path, "wb") as file_obj:
+                file_obj.write(b"payload")
+            group = dedup.DuplicateGroup(
+                "sparse",
+                (dedup.FileInfo(path, 7, os.stat(path).st_mtime_ns),),
+                "fast-test",
+            )
+            preloader = dedup.FullHashPreloader([group])
+            preloader._compute_full_hash_entry = lambda _path: (_ for _ in ()).throw(
+                RuntimeError("boom")
+            )
+            preloader.start()
+            preloader.thread.join(timeout=5)
+
+            self.assertNotIn(path, preloader.in_flight)
+
+            # Bounded so a regression (worker dies holding in_flight) fails the
+            # test instead of blocking the suite in get()'s wait loop.
+            outcome = []
+            getter = threading.Thread(
+                target=lambda: outcome.append(preloader.get(path)), daemon=True
+            )
+            getter.start()
+            getter.join(timeout=5)
+            self.assertFalse(getter.is_alive(), "get() blocked after worker crash")
+            self.assertEqual(outcome, [None])
+
     def test_full_hash_preloader_recomputes_stale_cached_hash(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = os.path.join(temp_dir, "file.bin")
