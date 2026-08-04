@@ -58,3 +58,54 @@ jobs:
         run: |
           python dedup.py --help
           python dedup.py --smoke-test-browser
+
+  # install.ps1 cannot be exercised on a developer's macOS machine, so CI is
+  # the only thing standing between a typo and a broken install one-liner.
+  windows-installer:
+    name: install.ps1 (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse without executing
+        shell: pwsh
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path .\install.ps1), [ref]$null, [ref]$errors) | Out-Null
+          if ($errors) { $errors | ForEach-Object { Write-Host $_ }; throw 'install.ps1 has parse errors.' }
+          Write-Host 'install.ps1 parses cleanly.'
+
+      # The scriptblock form is what the README's one-liner uses. Running it
+      # here proves the whole path works: download, pip, extract, PATH.
+      #
+      # Both shells, because they are not equivalent: Windows PowerShell 5.1
+      # surfaces ZipFileExtensions.ExtractToFile on the ZipArchiveEntry
+      # instance and PowerShell 7 does not. That difference broke the
+      # installer, and only running both would have caught it.
+      - name: Install under PowerShell 7
+        shell: pwsh
+        run: |
+          & ([scriptblock]::Create((Get-Content -Raw .\install.ps1))) -InstallDir "$env:RUNNER_TEMP\dedup7" -Force
+          & "$env:RUNNER_TEMP\dedup7\dedup.cmd" --help
+
+      - name: Install under Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          & ([scriptblock]::Create((Get-Content -Raw .\install.ps1))) -InstallDir "$env:RUNNER_TEMP\dedup51" -Force
+          & "$env:RUNNER_TEMP\dedup51\dedup.cmd" --help
+
+      # A failure must report and return, never call exit: under `irm | iex`
+      # that would close the caller's session. If this step's own session dies,
+      # the step fails, which is exactly the regression we want to catch.
+      - name: Failure path must not kill the session
+        shell: pwsh
+        run: |
+          $failed = $false
+          try {
+            & ([scriptblock]::Create((Get-Content -Raw .\install.ps1))) -Version 'v0.0.0-does-not-exist' -InstallDir "$env:RUNNER_TEMP\dedup2" -Force
+          } catch {
+            $failed = $true
+          }
+          if (-not $failed) { throw 'A bad version should have reported a failure.' }
+          Write-Host 'Failure surfaced and the session survived.'

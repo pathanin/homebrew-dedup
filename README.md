@@ -1,5 +1,7 @@
 # dedup
 
+[![CI](https://github.com/pathanin/homebrew-dedup/actions/workflows/ci.yml/badge.svg)](https://github.com/pathanin/homebrew-dedup/actions/workflows/ci.yml)
+
 `dedup` is a local duplicate-file review tool. It scans a folder, groups likely duplicates, opens a browser UI on your machine, and moves only the files you select to Trash or a recoverable recycle location.
 
 It is built for large, messy folders where you want fast duplicate detection, visual review, and conservative delete-time safety.
@@ -36,13 +38,22 @@ brew install pathanin/dedup/dedup
 
 Requires **Python 3.8+** (install from [python.org](https://python.org) or the Microsoft Store).
 
-Install with the PowerShell installer from the [latest release](https://github.com/pathanin/homebrew-dedup/releases/latest):
+In PowerShell:
 
 ```powershell
-# Download the installer
-Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/pathanin/homebrew-dedup/releases/latest/download/install.ps1" -OutFile install.ps1
+irm https://raw.githubusercontent.com/pathanin/homebrew-dedup/main/install.ps1 | iex
+```
 
-# Run it
+To pass options, run the same script as a scriptblock:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/pathanin/homebrew-dedup/main/install.ps1))) -Force
+```
+
+Prefer to inspect it first? Download, read, then run:
+
+```powershell
+irm https://raw.githubusercontent.com/pathanin/homebrew-dedup/main/install.ps1 -OutFile install.ps1
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
@@ -62,13 +73,13 @@ After installation, reopen your terminal and verify:
 dedup --help
 ```
 
-**Installer options:**
+**Installer options** — append any of these to the scriptblock form above, or to `.\install.ps1` if you downloaded it:
 
 ```powershell
-.\install.ps1 -Version v0.4.1                    # specific version
-.\install.ps1 -InstallDir "D:\tools\dedup"       # custom location
-.\install.ps1 -Force                              # overwrite without prompt
-.\install.ps1 -NoPathUpdate                       # skip PATH modification
+-Version v0.4.1                 # specific version
+-InstallDir "D:\tools\dedup"    # custom location
+-Force                          # overwrite without prompt
+-NoPathUpdate                   # skip PATH modification
 ```
 
 ### Verify (all platforms)
@@ -223,8 +234,8 @@ brew reinstall pathanin/dedup/dedup
 
 **Windows:**
 
-Download and rerun the installer — it upgrades in place:
+Rerun the one-liner — it upgrades in place:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File install.ps1 -Force
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/pathanin/homebrew-dedup/main/install.ps1))) -Force
 ```
