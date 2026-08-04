@@ -182,7 +182,11 @@ try {
                 }
 
                 $targetPath = Join-Path $InstallDir $fileName
-                $entry.ExtractToFile($targetPath, $true)
+                # Call the static form, not $entry.ExtractToFile(...).
+                # ExtractToFile is an extension method: Windows PowerShell 5.1
+                # surfaces it on the instance, PowerShell 7 does not.
+                [System.IO.Compression.ZipFileExtensions]::ExtractToFile(
+                    $entry, $targetPath, $true)
             }
         } finally {
             $archive.Dispose()

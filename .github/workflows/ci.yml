@@ -62,13 +62,21 @@ jobs:
   # install.ps1 cannot be exercised on a developer's macOS machine, so CI is
   # the only thing standing between a typo and a broken install one-liner.
   windows-installer:
-    name: install.ps1 (windows)
+    name: install.ps1 (${{ matrix.shell }})
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # PowerShell 7 and Windows PowerShell 5.1 differ in ways that break
+        # this script: 5.1 surfaces ZipFileExtensions.ExtractToFile on the
+        # instance, 7 does not. Both must work — `irm | iex` runs in whichever
+        # shell the user happens to have open.
+        shell: [pwsh, powershell]
     steps:
       - uses: actions/checkout@v4
 
       - name: Parse without executing
-        shell: pwsh
+        shell: ${{ matrix.shell }}
         run: |
           $errors = $null
           [System.Management.Automation.Language.Parser]::ParseFile(
@@ -79,7 +87,7 @@ jobs:
       # The scriptblock form is what the README's one-liner uses. Running it
       # here proves the whole path works: download, pip, extract, PATH.
       - name: Install via the one-liner form
-        shell: pwsh
+        shell: ${{ matrix.shell }}
         run: |
           & ([scriptblock]::Create((Get-Content -Raw .\install.ps1))) -InstallDir "$env:RUNNER_TEMP\dedup" -Force
           & "$env:RUNNER_TEMP\dedup\dedup.cmd" --help
@@ -88,7 +96,7 @@ jobs:
       # that would close the caller's session. If this step's own session dies,
       # the step fails, which is exactly the regression we want to catch.
       - name: Failure path must not kill the session
-        shell: pwsh
+        shell: ${{ matrix.shell }}
         run: |
           $failed = $false
           try {
