@@ -93,6 +93,40 @@ class CliTests(unittest.TestCase):
         self.assertEqual(args.port, 8080)
 
 
+class HashSelectionTests(unittest.TestCase):
+    def fake_timings(self, seconds_by_name):
+        def probe(hash_name, payload, rounds=dedup.HASH_PROBE_ROUNDS):
+            return seconds_by_name[hash_name]
+
+        return mock.patch.object(dedup, "_probe_hash_seconds", probe)
+
+    def test_selects_accelerated_hash_only_past_the_margin(self):
+        margin = dedup.HASH_PROBE_MARGIN
+        # Exactly at the margin counts as a clear win.
+        timings = {dedup.BASELINE_HASH_NAME: margin, dedup.ACCELERATED_HASH_NAME: 1.0}
+        with self.fake_timings(timings):
+            self.assertEqual(dedup.select_hash_name(), dedup.ACCELERATED_HASH_NAME)
+
+        # Just under it does not: timing noise must never flip the choice.
+        timings = {dedup.BASELINE_HASH_NAME: margin - 0.01, dedup.ACCELERATED_HASH_NAME: 1.0}
+        with self.fake_timings(timings):
+            self.assertEqual(dedup.select_hash_name(), dedup.BASELINE_HASH_NAME)
+
+    def test_falls_back_to_baseline_when_probe_fails(self):
+        with mock.patch.object(dedup, "ACCELERATED_HASH_NAME", "not-a-real-hash"):
+            self.assertEqual(dedup.select_hash_name(), dedup.BASELINE_HASH_NAME)
+
+        # A zero-second reading means the probe is unusable, not infinitely fast.
+        timings = {dedup.BASELINE_HASH_NAME: 1.0, dedup.ACCELERATED_HASH_NAME: 0.0}
+        with self.fake_timings(timings):
+            self.assertEqual(dedup.select_hash_name(), dedup.BASELINE_HASH_NAME)
+
+    def test_selected_hashes_are_usable_and_consistent(self):
+        self.assertEqual(dedup.FAST_HASH_NAME, dedup.FULL_HASH_NAME)
+        self.assertIn(dedup.FULL_HASH_NAME, (dedup.BASELINE_HASH_NAME, dedup.ACCELERATED_HASH_NAME))
+        self.assertTrue(dedup.make_hasher(dedup.FULL_HASH_NAME).hexdigest())
+
+
 class DuplicateGroupingTests(unittest.TestCase):
     def make_options(self, path, verify_mode=dedup.VERIFY_FAST):
         return dedup.ScanOptions(

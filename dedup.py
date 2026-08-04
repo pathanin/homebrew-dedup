@@ -60,8 +60,59 @@ THUMBNAIL_QUALITY = 4
 MIN_VIDEO_HOVER_THUMBNAILS = 4
 MAX_VIDEO_HOVER_THUMBNAILS = 12
 VIDEO_MULTI_THUMBNAIL_SECONDS = 15
-FAST_HASH_NAME = "blake2b"
-FULL_HASH_NAME = "blake2b"
+BASELINE_HASH_NAME = "blake2b"
+ACCELERATED_HASH_NAME = "sha256"
+HASH_PROBE_BYTES = 4194304
+HASH_PROBE_ROUNDS = 3
+HASH_PROBE_MARGIN = 1.15
+
+
+def make_hasher(hash_name):
+    try:
+        return hashlib.new(hash_name, usedforsecurity=False)
+    except TypeError:
+        return hashlib.new(hash_name)
+
+
+def _probe_hash_seconds(hash_name, payload, rounds=HASH_PROBE_ROUNDS):
+    # Best-of-N, not mean: the fastest run is the one least disturbed by
+    # other load, which is what we want to compare.
+    best = None
+    for _ in range(rounds):
+        hasher = make_hasher(hash_name)
+        start = time.perf_counter()
+        hasher.update(payload)
+        elapsed = time.perf_counter() - start
+        if best is None or elapsed < best:
+            best = elapsed
+    return best
+
+
+def select_hash_name(probe_bytes=HASH_PROBE_BYTES, margin=HASH_PROBE_MARGIN):
+    """Pick sha256 only on CPUs that accelerate it, else blake2b.
+
+    hashlib routes sha256 through OpenSSL, so it runs about 2x blake2b
+    where the CPU has SHA extensions (ARMv8 crypto, x86 SHA-NI) and about
+    0.5x where it does not. Platform strings do not reliably report those
+    extensions, so measure instead. Costs roughly 10 ms at import.
+    """
+    payload = b"\xa5" * probe_bytes
+    try:
+        baseline = _probe_hash_seconds(BASELINE_HASH_NAME, payload)
+        accelerated = _probe_hash_seconds(ACCELERATED_HASH_NAME, payload)
+    except (ValueError, TypeError):
+        # An algorithm missing from this build: blake2b is always present.
+        return BASELINE_HASH_NAME
+    if not baseline or not accelerated:
+        return BASELINE_HASH_NAME
+    # Require a clear win, so timing noise never flips the choice.
+    if baseline / accelerated >= margin:
+        return ACCELERATED_HASH_NAME
+    return BASELINE_HASH_NAME
+
+
+FULL_HASH_NAME = select_hash_name()
+FAST_HASH_NAME = FULL_HASH_NAME
 MACOS_TRASH_CMD = shutil.which("trash")
 FAST_SAMPLE_BYTES = 65536
 MIN_FAST_SAMPLE_COUNT = 8
@@ -676,13 +727,6 @@ def describe_original_reason(info, group_files, original):
     if len(info.path) > len(original.path):
         return "longer path"
     return "path tiebreak"
-
-
-def make_hasher(hash_name):
-    try:
-        return hashlib.new(hash_name, usedforsecurity=False)
-    except TypeError:
-        return hashlib.new(hash_name)
 
 
 def make_fast_hasher():
