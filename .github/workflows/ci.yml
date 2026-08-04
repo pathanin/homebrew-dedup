@@ -34,8 +34,11 @@ jobs:
             python: "3.12"
           - os: macos-latest
             python: "3.13"
-          - os: windows-latest
-            python: "3.12"
+          # No Windows job. dedup.py supports it (see dedup.cmd, install.ps1),
+          # but the suite assumes POSIX: path separators in the /Volumes tests,
+          # newline translation in test_readable_text_preview, and a local-trash
+          # fallback that dedup.py deliberately refuses on Windows. Add the job
+          # back once those four tests are platform-aware.
     steps:
       - uses: actions/checkout@v4
 
