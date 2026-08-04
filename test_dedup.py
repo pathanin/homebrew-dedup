@@ -369,7 +369,10 @@ class BrowserHelperTests(unittest.TestCase):
     def test_readable_text_preview(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = os.path.join(temp_dir, "notes.txt")
-            with open(path, "w", encoding="utf-8") as file_obj:
+            # newline="" so the fixture bytes are the same on every platform:
+            # read_text_preview() reads binary, and text mode would turn these
+            # into \r\n on Windows.
+            with open(path, "w", encoding="utf-8", newline="") as file_obj:
                 file_obj.write("alpha\nbeta\n")
 
             self.assertTrue(dedup.is_readable_text_file(path, os.path.getsize(path)))
@@ -1200,6 +1203,11 @@ class TrashSafetyTests(unittest.TestCase):
         os_remove.assert_called_once_with(path)
         prompt.assert_not_called()
 
+    @unittest.skipIf(
+        os.name == "nt",
+        "exercises macOS /Volumes semantics; volume roots are derived with "
+        "os.sep, which is a backslash on Windows",
+    )
     def test_trash_files_prompts_once_per_volume_in_interactive_mode(self):
         paths = [
             "/Volumes/Storage/a.zip",
@@ -1444,6 +1452,11 @@ class VolumeHelperTests(unittest.TestCase):
             file_obj.write(b"x")
         return file_path
 
+    @unittest.skipIf(
+        os.name == "nt",
+        "get_macos_volume_root() is only reached when CURRENT_OS is macOS; "
+        "on Windows abspath() prepends a drive and os.sep is a backslash",
+    )
     def test_get_macos_volume_root(self):
         self.assertEqual(
             dedup.get_macos_volume_root("/Volumes/Storage/driver/test.zip"),
@@ -1523,6 +1536,26 @@ class VolumeHelperTests(unittest.TestCase):
             with open(dest, "rb") as file_obj:
                 self.assertEqual(file_obj.read(), b"x")
 
+    def test_move_to_local_trash_refuses_on_windows(self):
+        # Mocks CURRENT_OS so the Windows branch is covered everywhere, which
+        # is what lets the collision test below skip on Windows without
+        # losing coverage.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source = self._make_file(temp_dir, "source", "f.txt")
+
+            with mock.patch.object(dedup, "CURRENT_OS", dedup.OS_WINDOWS):
+                with self.assertRaises(OSError) as caught:
+                    dedup.move_to_local_trash(source)
+
+            self.assertIn("Recycle Bin", str(caught.exception))
+            # Refusing must never consume the file.
+            self.assertTrue(os.path.exists(source))
+
+    @unittest.skipIf(
+        os.name == "nt",
+        "move_to_local_trash() deliberately refuses on Windows; the refusal is "
+        "covered by test_move_to_local_trash_refuses_on_windows",
+    )
     def test_move_to_local_trash_resolves_repeated_collision(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             trash_dir = os.path.join(temp_dir, ".Trash")
