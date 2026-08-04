@@ -96,6 +96,16 @@ Constants in `UPPER_SNAKE_CASE`, classes in `PascalCase`, functions and variable
 
 The worst thing this program can do is trash a file that is not a duplicate. The guard is `revalidate_selected_file_exact()`: it full-hashes the selection and every unselected peer, and trashes only on an exact match, so a sparse-prefilter false positive is skipped rather than moved. Its tests live in `TrashSafetyTests` — `test_fast_mode_selection_requires_exact_kept_duplicate` (same size, same sampled bytes, one differing byte in an unsampled gap) and `test_selecting_every_file_in_a_group_leaves_no_keeper`. They assert on skip counters *and* on the files still existing, and they derive the attack offset from `iter_sparse_offsets()` rather than hardcoding it. Find these by running the class, not by grepping for message text: they deliberately do not assert on most strings.
 
+The remaining guards reject input that never appears in normal use, so no ordinary change touches them and no diff-scoped test reaches them. Each needs a test that supplies the bad input it exists to catch, not one that confirms valid input passes.
+
+| Guard | Bad input it must reject | Tests |
+|---|---|---|
+| `revalidate_file()` | File changed or replaced between scan and trash | `TrashSafetyTests` |
+| `sanitize_browser_trash_selection()` | File IDs outside the scanned set | `TrashSafetyTests` |
+| `validate_scan_root()` | Home directory, volume root, photo library | `RootGuardTests` |
+
+`full_hash_reader` (normally `FullHashPreloader.get`) feeds `_cached_full_hash()`, whose result gates deletion in `revalidate_selected_file_exact()`. `None` there must always mean "do not trash", never "no objection". Re-check that whenever you touch error handling in the preloader: swallowing an exception turns a crash into a value this caller reads.
+
 **ffmpeg/ffprobe are optional** — when absent, video thumbnails fall back to `fallbackVideoThumb()` (a text span/icon) and metadata fields are omitted. The UI remains functional without them.
 
 **Python 3.8+** — no walrus operator in non-trivial contexts, no `match`, no 3.10+ syntax. Standard library only (plus `send2trash`).
