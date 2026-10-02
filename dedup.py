@@ -3364,20 +3364,27 @@ def make_browser_handler(state):
     return BrowserSelectionHandler
 
 
-def focus_terminal():
+def frontmost_app():
+    # Captured before the browser opens, so it names whatever terminal launched us.
+    if CURRENT_OS != OS_MACOS:
+        return None
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", "POSIX path of (path to frontmost application)"],
+            capture_output=True, text=True, check=False, timeout=2,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def focus_terminal(app=None):
     if CURRENT_OS == OS_MACOS:
-        apps = ["iTerm2", "iTerm", "Terminal", "Code", "Cursor"]
-        term = os.environ.get("TERM_PROGRAM", "")
-        if "iterm" in term.lower():
-            apps.insert(0, "iTerm")
-        if "apple_terminal" in term.lower():
-            apps.insert(0, "Terminal")
-        if "code" in term.lower():
-            apps.insert(0, "Code")
-        for app in apps:
-            script = f'if application "{app}" is running then tell application "{app}" to activate'
+        if app:
             try:
-                subprocess.run(["osascript", "-e", script], capture_output=True, check=False, timeout=2)
+                subprocess.run(["open", "-a", app], capture_output=True, check=False, timeout=2)
             except Exception:
                 pass
     elif CURRENT_OS == OS_WINDOWS:
@@ -3412,6 +3419,7 @@ def _run_browser_session(state, handler_factory, url_label, cleanup=None, port=7
     print(f"  → {url}")
     print("  (If the browser did not open automatically, copy the URL above.)")
     print("Press Ctrl+C to cancel.", flush=True)
+    terminal_app = frontmost_app()
     try:
         webbrowser.open(url)
     except Exception:
@@ -3426,7 +3434,7 @@ def _run_browser_session(state, handler_factory, url_label, cleanup=None, port=7
         server_thread.join(timeout=2)
         if cleanup:
             cleanup()
-    focus_terminal()
+    focus_terminal(terminal_app)
     print(flush=True)
     return state.selected_paths
 

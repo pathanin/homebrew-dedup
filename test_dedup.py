@@ -2161,5 +2161,25 @@ class PhotoLibraryConfirmTests(unittest.TestCase):
         self.assertEqual(result, 0)
 
 
+class FocusTerminalTests(unittest.TestCase):
+    def test_macos_restores_the_app_that_was_frontmost(self):
+        probe = mock.Mock(returncode=0, stdout="/Applications/Ghostty.app/\n")
+        with mock.patch.object(dedup, "CURRENT_OS", dedup.OS_MACOS), \
+                mock.patch.object(dedup.subprocess, "run", return_value=probe) as run:
+            app = dedup.frontmost_app()
+            dedup.focus_terminal(app)
+        self.assertEqual(app, "/Applications/Ghostty.app/")
+        self.assertEqual(run.call_args_list[-1][0][0], ["open", "-a", "/Applications/Ghostty.app/"])
+
+    def test_macos_does_nothing_when_frontmost_app_unknown(self):
+        with mock.patch.object(dedup, "CURRENT_OS", dedup.OS_MACOS), \
+                mock.patch.object(dedup.subprocess, "run", side_effect=OSError) as run:
+            app = dedup.frontmost_app()
+            run.reset_mock()
+            dedup.focus_terminal(app)
+        self.assertIsNone(app)
+        run.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
