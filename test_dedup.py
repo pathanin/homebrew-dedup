@@ -16,6 +16,18 @@ sys.dont_write_bytecode = True
 import dedup
 
 
+class BytecodeCleanupTests(unittest.TestCase):
+    def test_cleanup_survives_interpreter_dropping_file_global(self):
+        saved = dedup.__dict__.pop("__file__")
+        try:
+            with mock.patch("dedup.glob.glob", return_value=[]) as fake_glob:
+                dedup.cleanup_own_bytecode()
+        finally:
+            dedup.__file__ = saved
+        expected_dir = os.path.join(os.path.dirname(os.path.abspath(saved)), "__pycache__")
+        fake_glob.assert_called_once_with(os.path.join(expected_dir, "dedup*.pyc"))
+
+
 class RootGuardTests(unittest.TestCase):
     def test_rejects_filesystem_root(self):
         with self.assertRaises(ValueError):

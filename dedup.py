@@ -155,9 +155,13 @@ COPY_PATTERN = re.compile(r"(\bcopy\b|\bduplicate\b|\s\(\d+\)$)", re.IGNORECASE)
 NAS_RECYCLE_DIR_NAMES = ("#recycle", "@Recycle", ".recycle")
 
 
+# Captured at import: Python 3.14 drops __main__.__file__ before atexit callbacks run.
+OWN_SCRIPT_PATH = os.path.abspath(__file__)
+
+
 def cleanup_own_bytecode():
-    cache_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "__pycache__")
-    module_name = os.path.splitext(os.path.basename(__file__))[0]
+    cache_dir = os.path.join(os.path.dirname(OWN_SCRIPT_PATH), "__pycache__")
+    module_name = os.path.splitext(os.path.basename(OWN_SCRIPT_PATH))[0]
     for bytecode_path in glob.glob(os.path.join(cache_dir, f"{module_name}*.pyc")):
         try:
             os.remove(bytecode_path)
