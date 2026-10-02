@@ -119,7 +119,7 @@ MIN_FAST_SAMPLE_COUNT = 8
 MAX_FAST_SAMPLE_COUNT = 64
 SMALL_FILE_FULL_HASH_BYTES = 1048576  # 1MB — small files get full hash
 FULL_HASH_CHUNK_BYTES = 1048576
-EXACT_VERIFY_PROGRESS_INTERVAL = 0.25
+PROGRESS_INTERVAL = 0.25
 RANGE_SERVE_CHUNK_BYTES = 65536
 SUBPROCESS_SEMAPHORE = threading.Semaphore(4)
 THUMBNAIL_SUBPROCESS_SEMAPHORE = threading.Semaphore(8)
@@ -845,7 +845,17 @@ def should_ignore_entry(name, is_dir, options):
     return name.endswith(options.ignore_file_suffixes)
 
 
-def print_progress(label, done, total=None, stats=None):
+_last_progress_print = 0.0
+
+
+def print_progress(label, done, total=None, stats=None, force=False):
+    # Unforced calls redraw at most every PROGRESS_INTERVAL, and only on a TTY,
+    # so slow stages keep moving without flooding piped output with \r lines.
+    global _last_progress_print
+    now = time.monotonic()
+    if not force and (now - _last_progress_print < PROGRESS_INTERVAL or not sys.stdout.isatty()):
+        return
+    _last_progress_print = now
     if total:
         percent = (done / total) * 100 if total else 100
         print(f"\r[{label}] {done}/{total} ({percent:.1f}%)", end="", flush=True)
@@ -959,11 +969,10 @@ def scan_by_size(options, stats):
                 singletons[info.size] = info
             stats.scanned += 1
 
-            if entries_seen % options.progress_every == 0:
-                print_progress("scan", entries_seen, stats=stats)
+            print_progress("scan", entries_seen, stats=stats, force=entries_seen % options.progress_every == 0)
 
     if entries_seen:
-        print_progress("scan", entries_seen, stats=stats)
+        print_progress("scan", entries_seen, stats=stats, force=True)
         finish_progress()
     return sizes
 
@@ -1015,8 +1024,7 @@ def find_duplicates(options):
             stats.unreadable += 1
             if len(stats.unreadable_paths) < 50:
                 stats.unreadable_paths.append(info.path)
-        if done == total or done % options.progress_every == 0:
-            print_progress("sparse hash", done, total)
+        print_progress("sparse hash", done, total, force=done == total or done % options.progress_every == 0)
     finish_progress()
 
     sparse_candidates = [
@@ -1055,8 +1063,7 @@ def find_duplicates(options):
             stats.unreadable += 1
             if len(stats.unreadable_paths) < 50:
                 stats.unreadable_paths.append(info.path)
-        if done == total or done % options.progress_every == 0:
-            print_progress("full hash", done, total)
+        print_progress("full hash", done, total, force=done == total or done % options.progress_every == 0)
     finish_progress()
 
     duplicates = [
@@ -1241,7 +1248,16 @@ button:hover:not(:disabled) { opacity: .8; }
 .modal-backdrop { position: fixed; inset: 0; z-index: 50; display: none; align-items: center; justify-content: center; padding: 20px; background: rgba(0,0,0,.48); }
 .modal-backdrop.is-open { display: flex; }
 .modal h2 { margin: 0; font-size: 15px; }
-.modal p { margin: 0; color: var(--muted); font-size: 12px; }\
+.modal p { margin: 0; color: var(--muted); font-size: 12px; }
+.modal-backdrop.is-open { transition: opacity 200ms cubic-bezier(0.23, 1, 0.32, 1); }
+.modal-backdrop.is-open .modal { transition: opacity 200ms cubic-bezier(0.23, 1, 0.32, 1), transform 200ms cubic-bezier(0.23, 1, 0.32, 1); }
+@starting-style {
+  .modal-backdrop.is-open { opacity: 0; }
+  .modal-backdrop.is-open .modal { opacity: 0; transform: scale(0.96); }
+}
+@media (prefers-reduced-motion: reduce) { @starting-style { .modal-backdrop.is-open .modal { transform: none; } } }
+button { transition: transform 160ms cubic-bezier(0.23, 1, 0.32, 1); }
+button:active:not(:disabled) { transform: scale(0.97); }\
 """
 
 _SHARED_JS = """\
@@ -1327,6 +1343,8 @@ button.danger-action:hover:not(:disabled) { opacity: .85; }
 .choice button { border: 0; border-radius: 0; padding: 6px; font-size: 12px; font-weight: 500; background: transparent; color: var(--muted); }
 .choice button.active.keep { background: var(--keep-bg); color: var(--keep); font-weight: 600; }
 .choice button.active.trash { background: var(--danger-bg); color: var(--danger); font-weight: 600; }
+.choice button:active, .folder-row:active { transform: none; }
+#previewOverlay, #previewOverlay .modal { transition: none; }
 .choice button.keep:not(.active):hover { background: var(--keep-bg); color: var(--keep); opacity: 1; }
 .choice button.trash:not(.active):hover { background: var(--danger-bg); color: var(--danger); opacity: 1; }
 .reveal-btn { position: absolute; top: 6px; right: 6px; border: 1px solid var(--line); background: var(--panel); opacity: 0; transition: opacity .15s; z-index: 2; padding: 3px 7px; font-size: 11px; border-radius: 5px; }
@@ -3916,7 +3934,7 @@ class FullHashPreloader:
         with self.condition:
             self.progress_done += byte_count
             now = time.monotonic()
-            if now - self.progress_last_print < EXACT_VERIFY_PROGRESS_INTERVAL:
+            if now - self.progress_last_print < PROGRESS_INTERVAL:
                 return
             self.progress_last_print = now
             self.progress_printed = True

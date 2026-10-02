@@ -40,6 +40,28 @@ class RootGuardTests(unittest.TestCase):
                 dedup.validate_scan_root(library_dir)
 
 
+class ProgressLineTests(unittest.TestCase):
+    def setUp(self):
+        dedup._last_progress_print = 0.0
+
+    def run_progress(self, tty, *calls):
+        out = io.StringIO()
+        out.isatty = lambda: tty
+        with contextlib.redirect_stdout(out):
+            for force in calls:
+                dedup.print_progress("hash", 1, 2, force=force)
+        return out.getvalue().count("[hash]")
+
+    def test_unforced_redraw_waits_for_interval(self):
+        self.assertEqual(self.run_progress(True, False, False), 1)
+
+    def test_forced_redraw_ignores_interval(self):
+        self.assertEqual(self.run_progress(True, False, True), 2)
+
+    def test_non_tty_only_prints_forced_lines(self):
+        self.assertEqual(self.run_progress(False, False, True), 1)
+
+
 class CliTests(unittest.TestCase):
     def test_default_options_use_fast_verification(self):
         args = dedup.parse_args(["."])
@@ -557,6 +579,17 @@ class BrowserHelperTests(unittest.TestCase):
         render_end = html.index('file.mediaKind === "audio"', render_start)
         pane_video_html = html[render_video:render_end]
         self.assertIn('src="${authUrlAttr(`/thumb/${urlId(file.id)}?i=0`)}"', pane_video_html)
+
+    def test_modals_animate_in_except_preview(self):
+        for html in (dedup.build_browser_html(), dedup.build_empty_dirs_html()):
+            self.assertIn("@starting-style", html)
+            self.assertIn("prefers-reduced-motion", html)
+        self.assertIn("#previewOverlay, #previewOverlay .modal { transition: none; }", dedup.build_browser_html())
+
+    def test_buttons_scale_on_press_except_card_segments(self):
+        html = dedup.build_browser_html()
+        self.assertIn("button:active:not(:disabled) { transform: scale(0.97); }", html)
+        self.assertIn(".choice button:active, .folder-row:active { transform: none; }", html)
 
     def test_empty_dirs_html_posts_effective_selection(self):
         html = dedup.build_empty_dirs_html()
