@@ -591,6 +591,55 @@ class BrowserHelperTests(unittest.TestCase):
         self.assertIn("button:active:not(:disabled) { transform: scale(0.97); }", html)
         self.assertIn(".choice button:active, .folder-row:active { transform: none; }", html)
 
+    def test_card_keep_trash_tint_on_press(self):
+        html = dedup.build_browser_html()
+        self.assertIn(".choice button.keep:active:not(:disabled) { background: var(--keep-bg); color: var(--keep); }", html)
+        self.assertIn(".choice button.trash:active:not(:disabled) { background: var(--danger-bg); color: var(--danger); }", html)
+
+    def test_undo_keeps_a_bounded_stack(self):
+        html = dedup.build_browser_html()
+        self.assertNotIn("undoSnapshot", html)
+        self.assertIn("const MAX_UNDO_STEPS = 20;", html)
+        self.assertIn("if (undoStack.length > MAX_UNDO_STEPS) undoStack.shift();", html)
+        self.assertIn("const snapshot = undoStack.pop();", html)
+
+    def test_motion_respects_reduced_motion(self):
+        html = dedup.build_browser_html()
+        self.assertNotIn('behavior: "smooth"', html)
+        self.assertIn('function scrollBehavior() { return matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth"; }', html)
+        for page in (html, dedup.build_empty_dirs_html()):
+            self.assertIn("@media (prefers-reduced-motion: reduce) { .modal-backdrop .modal, .dir-picker { transform: none !important; } button:active:not(:disabled) { transform: none; } }", page)
+
+    def test_keyboard_marks_active_file_and_resizes_pane(self):
+        html = dedup.build_browser_html()
+        self.assertIn('function markKey(event) {', html)
+        self.assertIn('if (key === "k" || key === "t")', html)
+        self.assertIn('id="paneResizer" role="separator" aria-orientation="vertical" aria-label="Resize preview pane" tabindex="0"', html)
+        self.assertIn('resizer.addEventListener("keydown"', html)
+
+    def test_modals_fade_out_on_close(self):
+        for html in (dedup.build_browser_html(), dedup.build_empty_dirs_html()):
+            self.assertIn("display 150ms allow-discrete", html)
+            self.assertIn("pointer-events: none", html)
+
+    def test_folder_picker_grows_from_its_trigger(self):
+        html = dedup.build_browser_html()
+        self.assertIn("transform-origin: top right", html)
+        self.assertIn("@starting-style { .dir-picker { opacity: 0; transform: scale(0.96); } }", html)
+
+    def test_hover_tints_background_not_text(self):
+        for html in (dedup.build_browser_html(), dedup.build_empty_dirs_html()):
+            self.assertNotIn("opacity: .8;", html)
+            self.assertIn("button:hover:not(:disabled) { box-shadow: inset 0 0 0 100vmax var(--hover-tint); }", html)
+
+    def test_pages_use_system_font_and_palette_only_badges(self):
+        for html in (dedup.build_browser_html(), dedup.build_empty_dirs_html()):
+            self.assertNotIn('"Inter"', html)
+            self.assertIn("font: 13px/1.5 system-ui,", html)
+        html = dedup.build_browser_html()
+        for color in ("#fef9c3", "#854d0e", "#dbeafe", "#1d4ed8", "#422006", "#1e3a5f"):
+            self.assertNotIn(color, html)
+
     def test_empty_dirs_html_posts_effective_selection(self):
         html = dedup.build_empty_dirs_html()
 

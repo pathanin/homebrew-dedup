@@ -1223,6 +1223,7 @@ _SHARED_CSS = """\
   --danger: #dc2626;
   --danger-bg: #fef2f2;
   --danger-border: #fca5a5;
+  --hover-tint: rgba(0,0,0,.06);
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -1238,26 +1239,29 @@ _SHARED_CSS = """\
     --danger: #ef4444;
     --danger-bg: #450a0a;
     --danger-border: #991b1b;
+    --hover-tint: rgba(255,255,255,.08);
   }
 }
 * { box-sizing: border-box; }
 button { border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); padding: 6px 10px; font: inherit; cursor: pointer; white-space: nowrap; }
 button.primary { background: var(--text); border-color: var(--text); color: var(--panel); }
 button:disabled { opacity: .45; cursor: not-allowed; }
-button:hover:not(:disabled) { opacity: .8; }
-.modal-backdrop { position: fixed; inset: 0; z-index: 50; display: none; align-items: center; justify-content: center; padding: 20px; background: rgba(0,0,0,.48); }
-.modal-backdrop.is-open { display: flex; }
+button:hover:not(:disabled) { box-shadow: inset 0 0 0 100vmax var(--hover-tint); }
+.modal-backdrop { position: fixed; inset: 0; z-index: 50; display: none; align-items: center; justify-content: center; padding: 20px; background: rgba(0,0,0,.48); opacity: 0; pointer-events: none; transition: opacity 150ms ease-in, display 150ms allow-discrete; }
+.modal-backdrop .modal { transform: scale(0.96); transition: transform 150ms ease-in; }
+.modal-backdrop.is-open { display: flex; opacity: 1; pointer-events: auto; }
+.modal-backdrop.is-open .modal { transform: none; }
 .modal h2 { margin: 0; font-size: 15px; }
 .modal p { margin: 0; color: var(--muted); font-size: 12px; }
-.modal-backdrop.is-open { transition: opacity 200ms cubic-bezier(0.23, 1, 0.32, 1); }
+.modal-backdrop.is-open { transition: opacity 200ms cubic-bezier(0.23, 1, 0.32, 1), display 200ms allow-discrete; }
 .modal-backdrop.is-open .modal { transition: opacity 200ms cubic-bezier(0.23, 1, 0.32, 1), transform 200ms cubic-bezier(0.23, 1, 0.32, 1); }
 @starting-style {
   .modal-backdrop.is-open { opacity: 0; }
   .modal-backdrop.is-open .modal { opacity: 0; transform: scale(0.96); }
 }
-@media (prefers-reduced-motion: reduce) { @starting-style { .modal-backdrop.is-open .modal { transform: none; } } }
 button { transition: transform 160ms cubic-bezier(0.23, 1, 0.32, 1); }
-button:active:not(:disabled) { transform: scale(0.97); }\
+button:active:not(:disabled) { transform: scale(0.97); }
+@media (prefers-reduced-motion: reduce) { .modal-backdrop .modal, .dir-picker { transform: none !important; } button:active:not(:disabled) { transform: none; } }\
 """
 
 _SHARED_JS = """\
@@ -1285,7 +1289,7 @@ def build_browser_html():
 + _SHARED_CSS
 + """
 /* ── page-specific ─────────────────────────────────── */
-body { margin: 0; font: 13px/1.5 "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; }
+body { margin: 0; font: 13px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; }
 header { position: sticky; top: 0; z-index: 10; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); flex-shrink: 0; }
 input[type="search"] { flex: 1; min-width: 140px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); font: inherit; }
 input[type="search"]:focus { outline: 2px solid var(--text); outline-offset: 1px; }
@@ -1293,7 +1297,7 @@ select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; ba
 button.keep { color: var(--keep); }
 button.danger { color: var(--danger); }
 button#cancel { background: transparent; border-color: transparent; color: var(--muted); font-size: 12px; }
-button#cancel:hover { color: var(--text); opacity: 1; }
+button#cancel:hover { color: var(--text); }
 button[aria-pressed="true"], button.active-toggle { border-color: var(--text); }
 .stats-bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 6px 16px; background: var(--surface); border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); flex-shrink: 0; }
 .stats-inline { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -1302,7 +1306,6 @@ button[aria-pressed="true"], button.active-toggle { border-color: var(--text); }
 .header-divider { width: 1px; background: var(--line); align-self: stretch; margin: 0 2px; flex-shrink: 0; }
 .header-actions { display: flex; gap: 6px; align-items: center; margin-left: auto; }
 button.danger-action { background: var(--danger); border-color: var(--danger); color: #fff; }
-button.danger-action:hover:not(:disabled) { opacity: .85; }
 .folder-clear { margin-left: 2px; font-style: normal; }
 .content-scroll { overflow-y: scroll; overflow-x: hidden; flex: 1; contain: layout size; }
 .content { padding: 12px 16px; }
@@ -1332,28 +1335,26 @@ button.danger-action:hover:not(:disabled) { opacity: .85; }
 .path { color: var(--muted); font-size: 11px; word-break: break-all; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .badges { display: flex; gap: 4px; flex-wrap: wrap; align-content: flex-start; min-height: 16px; }
 .badge { font-size: 11px; line-height: 16px; padding: 1px 6px; border-radius: 999px; background: var(--surface); color: var(--muted); height: 18px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.badge.original { background: #fef9c3; color: #854d0e; }
+.badge.original { color: var(--text); font-weight: 600; }
 .badge.manual { color: var(--text); font-style: italic; }
-.badge.hardlink { background: #dbeafe; color: #1d4ed8; }
-@media (prefers-color-scheme: dark) {
-  .badge.original { background: #422006; color: #fde68a; }
-  .badge.hardlink { background: #1e3a5f; color: #93c5fd; }
-}
+.badge.hardlink { background: transparent; box-shadow: inset 0 0 0 1px var(--line); }
 .choice { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--line); margin-top: auto; }
 .choice button { border: 0; border-radius: 0; padding: 6px; font-size: 12px; font-weight: 500; background: transparent; color: var(--muted); }
 .choice button.active.keep { background: var(--keep-bg); color: var(--keep); font-weight: 600; }
 .choice button.active.trash { background: var(--danger-bg); color: var(--danger); font-weight: 600; }
 .choice button:active, .folder-row:active { transform: none; }
+.choice button.keep:active:not(:disabled) { background: var(--keep-bg); color: var(--keep); }
+.choice button.trash:active:not(:disabled) { background: var(--danger-bg); color: var(--danger); }
 #previewOverlay, #previewOverlay .modal { transition: none; }
-.choice button.keep:not(.active):hover { background: var(--keep-bg); color: var(--keep); opacity: 1; }
-.choice button.trash:not(.active):hover { background: var(--danger-bg); color: var(--danger); opacity: 1; }
+.choice button.keep:not(.active):hover { background: var(--keep-bg); color: var(--keep); }
+.choice button.trash:not(.active):hover { background: var(--danger-bg); color: var(--danger); }
 .reveal-btn { position: absolute; top: 6px; right: 6px; border: 1px solid var(--line); background: var(--panel); opacity: 0; transition: opacity .15s; z-index: 2; padding: 3px 7px; font-size: 11px; border-radius: 5px; }
 .file:hover .reveal-btn, .file:focus-within .reveal-btn { opacity: 1; }
 .empty-state { padding: 48px 20px; color: var(--muted); text-align: center; display: grid; justify-items: center; gap: 12px; }
 .empty-state button { color: var(--text); }
 .folder-strip { display: none; flex-wrap: wrap; gap: 4px; padding: 4px 16px; background: var(--panel); border-bottom: 1px solid var(--line); flex-shrink: 0; }
 .folder-row { display: inline-flex; flex-direction: column; gap: 1px; padding: 2px 8px; border-radius: 4px; font: inherit; font-size: 10px; text-align: left; border: 1px solid var(--line); background: transparent; cursor: pointer; max-width: 200px; overflow: hidden; }
-.folder-row:hover:not(:disabled) { background: var(--surface); opacity: 1; }
+.folder-row:hover:not(:disabled) { background: var(--surface); }
 .folder-row.is-active { background: var(--surface); border-color: var(--text); }
 .folder-row b { color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
 .folder-row span { color: var(--muted); white-space: nowrap; }
@@ -1368,13 +1369,14 @@ button.danger-action:hover:not(:disabled) { opacity: .85; }
 .preview-header h2 { overflow-wrap: anywhere; word-break: break-word; }
 .preview-decision { display: flex; gap: 6px; flex-shrink: 0; }
 .preview-keep-btn { color: var(--keep); border-color: var(--keep-border); background: var(--keep-bg); font-size: 12px; padding: 4px 10px; }
-.preview-keep-btn.active { background: var(--keep); color: #fff; border-color: var(--keep); opacity: 1; }
+.preview-keep-btn.active { background: var(--keep); color: #fff; border-color: var(--keep); }
 .preview-trash-btn { color: var(--danger); border-color: var(--danger-border); background: var(--danger-bg); font-size: 12px; padding: 4px 10px; }
-.preview-trash-btn.active { background: var(--danger); color: #fff; border-color: var(--danger); opacity: 1; }
+.preview-trash-btn.active { background: var(--danger); color: #fff; border-color: var(--danger); }
 .preview-body { min-height: 320px; min-width: 0; display: grid; place-items: center; background: var(--surface); border-radius: 8px; overflow: hidden; }
 .preview-body img, .preview-body iframe, .preview-body video { max-width: 100%; width: 100%; max-height: 70vh; border: 0; object-fit: contain; background: var(--panel); }
 .preview-body pre { width: 100%; max-width: 100%; max-height: 70vh; overflow: auto; margin: 0; padding: 12px; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--surface); color: var(--text); }
-.dir-picker { position: absolute; right: 10px; top: 40px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.12); z-index: 20; width: min(460px, 90%); max-height: 400px; overflow: auto; }
+.dir-picker { position: absolute; right: 10px; top: 40px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.12); z-index: 20; width: min(460px, 90%); max-height: 400px; overflow: auto; transform-origin: top right; transition: opacity 150ms cubic-bezier(0.23, 1, 0.32, 1), transform 150ms cubic-bezier(0.23, 1, 0.32, 1); }
+@starting-style { .dir-picker { opacity: 0; transform: scale(0.96); } }
 .dir-picker-row { border-bottom: 1px solid var(--line); padding: 10px 12px; }
 .dir-picker-row:last-child { border-bottom: 0; }
 .dir-picker-path { font-size: 11px; color: var(--text); word-break: break-all; margin-bottom: 3px; line-height: 1.4; }
@@ -1418,6 +1420,7 @@ body:not(.pane-open) #previewPane { display: none; }
 body:not(.pane-open) .pane-resizer { display: none; }
 .pane-resizer { flex: 0 0 5px; background: var(--line); cursor: col-resize; position: relative; flex-shrink: 0; transition: background .15s; }
 .pane-resizer:hover, .pane-resizer.is-dragging { background: var(--muted); }
+.pane-resizer:focus-visible { background: var(--text); outline: none; }
 .pane-resizer::before { content: ''; position: absolute; top: 0; bottom: 0; left: -6px; right: -6px; cursor: col-resize; }
 .pane-placeholder { display: flex; flex-direction: column; align-items: center; justify-content: center; flex: 1; color: var(--muted); text-align: center; font-size: 13px; gap: 8px; padding: 24px; }
 .pane-preview-area { flex: 1; min-height: 0; min-width: 0; display: flex; align-items: center; justify-content: center; background: var(--surface); position: relative; overflow: hidden; border-bottom: 1px solid var(--line); }
@@ -1429,7 +1432,7 @@ body:not(.pane-open) .pane-resizer { display: none; }
 .pane-audio-icon { font-size: 52px; color: var(--muted); line-height: 1; }
 .pane-audio-player { width: calc(100% - 24px); }
 .pane-play-btn { position: absolute; width: 52px; height: 52px; border-radius: 50%; background: rgba(0,0,0,.6); color: #fff; border: 2px solid rgba(255,255,255,.45); font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background .15s; padding-left: 4px; }
-.pane-play-btn:hover { background: rgba(0,0,0,.82); opacity: 1; }
+.pane-play-btn:hover { background: rgba(0,0,0,.82); }
 .pane-metadata { flex: 0 0 auto; max-height: 40%; overflow-y: auto; padding: 10px 12px; font-size: 12px; border-top: 1px solid var(--line); }
 .pane-meta-who { font-size: 11px; color: var(--muted); font-style: italic; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--line); word-break: break-all; }
 .pane-meta-row { display: flex; gap: 6px; margin-bottom: 4px; min-width: 0; }
@@ -1472,7 +1475,7 @@ body.list-view .file-size-lv { flex: 0 0 76px; font-size: 11px; color: var(--mut
 body.list-view .choice { border-top: 0; border-left: 1px solid var(--line); flex: 0 0 130px; height: 40px; margin-top: 0; }
 .lv-preview-btn { display: none; }
 body.list-view .lv-preview-btn { display: flex; align-items: center; justify-content: center; font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: -.5px; border: 0; border-radius: 0; border-right: 1px solid var(--line); width: 36px; flex-shrink: 0; background: transparent; color: var(--muted); padding: 0; cursor: pointer; height: 100%; }
-body.list-view .lv-preview-btn:hover { color: var(--text); background: var(--surface); opacity: 1; }
+body.list-view .lv-preview-btn:hover { color: var(--text); background: var(--surface); }
 .file-type-badge { display: none; }
 .file-size-lv { display: none; }
 .file-reason { display: none; }
@@ -1527,7 +1530,7 @@ body.list-view .file-reason { flex: 1; min-width: 60px; font-size: 10px; color: 
   </div>
   <section class="content" id="groups"></section>
 </div>
-<div class="pane-resizer" id="paneResizer"></div>
+<div class="pane-resizer" id="paneResizer" role="separator" aria-orientation="vertical" aria-label="Resize preview pane" tabindex="0"></div>
 <div id="previewPane">
   <div class="pane-placeholder" id="panePlaceholder">
     <p>Select a file to preview</p>
@@ -1576,8 +1579,8 @@ body.list-view .file-reason { flex: 1; min-width: 60px; font-size: 10px; color: 
     <div class="preview-header">
       <h2 id="previewTitle">Preview</h2>
       <div class="preview-decision">
-        <button id="previewKeep" class="preview-keep-btn">Keep</button>
-        <button id="previewTrash" class="preview-trash-btn">Trash</button>
+        <button id="previewKeep" class="preview-keep-btn" title="Keep (K)">Keep</button>
+        <button id="previewTrash" class="preview-trash-btn" title="Trash (T)">Trash</button>
       </div>
     </div>
     <div id="previewMeta" class="preview-meta"></div>
@@ -1586,8 +1589,8 @@ body.list-view .file-reason { flex: 1; min-width: 60px; font-size: 10px; color: 
       <button id="previewPrev">&#8592; Prev</button>
       <button id="previewNext">Next &#8594;</button>
       <span style="flex:1"></span>
-      <button id="previewKeep2" class="preview-keep-btn">Keep</button>
-      <button id="previewTrash2" class="preview-trash-btn">Trash</button>
+      <button id="previewKeep2" class="preview-keep-btn" title="Keep (K)">Keep</button>
+      <button id="previewTrash2" class="preview-trash-btn" title="Trash (T)">Trash</button>
       <button id="previewClose">Close</button>
     </div>
   </div>
@@ -1604,7 +1607,8 @@ let totalFileCount = 0;
 let defaultSortIndex = 0;
 const trash = new Set();
 const manualChoices = new Set();
-let undoSnapshot = null;
+const undoStack = [];
+const MAX_UNDO_STEPS = 20;
 let trashedOnly = false;
 let isSubmitting = false;
 let sessionId = null;
@@ -1889,25 +1893,27 @@ function updateFolderRulesButton() {
   button.classList.toggle("active-toggle", folderRules.length > 0 || folderRulesDirty);
 }
 function recordUndo(label) {
-  undoSnapshot = { label, trashIds:Array.from(trash), manualIds:Array.from(manualChoices), folderRuleReasonEntries:Array.from(folderRuleReasons.entries()) };
+  undoStack.push({ label, trashIds:Array.from(trash), manualIds:Array.from(manualChoices), folderRuleReasonEntries:Array.from(folderRuleReasons.entries()) });
+  if (undoStack.length > MAX_UNDO_STEPS) undoStack.shift();
   updateUndoButton();
 }
 function undoLastAction() {
-  if (!undoSnapshot) return;
+  const snapshot = undoStack.pop();
+  if (!snapshot) return;
   const before = new Set(trash);
   const beforeReasons = new Map(folderRuleReasons);
-  replaceSet(trash, undoSnapshot.trashIds);
-  replaceSet(manualChoices, undoSnapshot.manualIds);
-  replaceMap(folderRuleReasons, undoSnapshot.folderRuleReasonEntries || []);
+  replaceSet(trash, snapshot.trashIds);
+  replaceSet(manualChoices, snapshot.manualIds);
+  replaceMap(folderRuleReasons, snapshot.folderRuleReasonEntries || []);
   const changedIds = allFiles().filter(f => before.has(f.id) !== trash.has(f.id) || beforeReasons.get(f.id) !== folderRuleReasons.get(f.id)).map(f => f.id);
-  undoSnapshot = null;
   refreshSelectionUi(changedIds);
 }
 function updateUndoButton() {
   const button = $("undo");
   if (!button) return;
-  button.disabled = !undoSnapshot;
-  button.textContent = undoSnapshot ? `Undo ${undoSnapshot.label}` : "Undo";
+  const last = undoStack[undoStack.length - 1];
+  button.disabled = !last;
+  button.textContent = last ? `Undo ${last.label}` : "Undo";
 }
 function setManual(ids) {
   ids.forEach((id) => {
@@ -2239,6 +2245,15 @@ function initPaneResizer() {
     resizer.addEventListener("pointerup", onUp);
     resizer.addEventListener("pointercancel", onUp);
   });
+  resizer.addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    const step = (e.shiftKey ? 80 : 20) * (e.key === "ArrowLeft" ? 1 : -1);
+    const w = Math.max(200, Math.min(pane.offsetWidth + step, mainArea.getBoundingClientRect().width * 0.75));
+    pane.style.width = w + "px";
+    applyPaneImageQuality();
+    try { localStorage.setItem("dedupPaneWidth", w); } catch {}
+  });
 }
 function toggleListView() {
   listViewMode = !listViewMode;
@@ -2529,6 +2544,7 @@ function getVisibleFlatFiles() {
   });
   return result;
 }
+function scrollBehavior() { return matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth"; }
 function navigateMainView(dir) {
   const flat = getVisibleFlatFiles();
   if (!flat.length) return;
@@ -2548,10 +2564,10 @@ function navigateMainView(dir) {
   }
   const card = findCard(file.id);
   if (card) {
-    card.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    card.scrollIntoView({ block: "nearest", behavior: scrollBehavior() });
   } else {
     const groupEl = document.querySelector(`.group[data-group-id="${CSS.escape(groupId)}"]`);
-    if (groupEl) groupEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    if (groupEl) groupEl.scrollIntoView({ block: "nearest", behavior: scrollBehavior() });
   }
 }
 function renderPreview(fileId) {
@@ -2654,7 +2670,7 @@ function renderGroupContent(el, group) {
     return `<article class="file ${isTrash ? 'is-trash' : 'is-keep'}" data-file-id="${esc(file.id)}">
       <button class="reveal-btn" data-action="reveal" title="Reveal ${esc(file.name)} in Finder/Explorer" aria-label="Reveal ${esc(file.name)} in Finder/Explorer">Open</button>
       <div class="thumb" role="button" tabindex="0" data-action="preview" data-group-id="${esc(group.id)}">${mediaHtml(file)}</div>
-      <div class="meta"><div class="file-type-badge">${esc(typeLabel)}</div><div class="name" title="${esc(file.name)}">${esc(file.name)}</div><div class="path" title="${esc(file.path)}">${esc(file.directory)}</div><div class="badges">${fileBadgesHtml(file, isTrash)}</div><div class="file-size-lv">${esc(file.sizeLabel)}</div><div class="file-reason">${esc(reasonText)}</div><div class="choice"><button class="lv-preview-btn" data-action="preview" data-group-id="${esc(group.id)}" title="Preview">(o)</button><button class="${!isTrash ? 'active keep' : 'keep'}" data-mark="keep">Keep</button><button class="${isTrash ? 'active trash' : 'trash'}" data-mark="trash">Trash</button></div></div>
+      <div class="meta"><div class="file-type-badge">${esc(typeLabel)}</div><div class="name" title="${esc(file.name)}">${esc(file.name)}</div><div class="path" title="${esc(file.path)}">${esc(file.directory)}</div><div class="badges">${fileBadgesHtml(file, isTrash)}</div><div class="file-size-lv">${esc(file.sizeLabel)}</div><div class="file-reason">${esc(reasonText)}</div><div class="choice"><button class="lv-preview-btn" data-action="preview" data-group-id="${esc(group.id)}" title="Preview">(o)</button><button class="${!isTrash ? 'active keep' : 'keep'}" data-mark="keep" title="Keep (K)">Keep</button><button class="${isTrash ? 'active trash' : 'trash'}" data-mark="trash" title="Trash (T)">Trash</button></div></div>
     </article>`;
   }).join("");
   el.innerHTML = `<div class="group-head"><div class="group-title"><b>${fileCountLabel}</b><span title="${esc(group.hashName + ' ' + group.hash)}" style="cursor:help">${esc(group.hashName)}</span>${groupImpactHtml}</div><div class="group-actions" data-group-id="${esc(group.id)}"><button class="trash-copies" data-group-action="trash">Trash copies</button><button data-group-action="folder">By folder</button><button data-group-action="oldest">Keep oldest</button><button data-group-action="none">Keep all</button></div></div><div class="files">${cards}</div>`;
@@ -2737,6 +2753,19 @@ function handleGroupsClick(event) {
   if (groupEl && root.contains(groupEl)) {
     setActiveGroup(groupEl.dataset.groupId);
   }
+}
+function markKey(event) {
+  if (event.metaKey || event.ctrlKey || event.altKey || isTextInputTarget(event.target)) return false;
+  if ($("confirmOverlay").classList.contains("is-open") || $("folderRulesOverlay").classList.contains("is-open")) return false;
+  const key = event.key.toLowerCase();
+  if (key === "k" || key === "t") {
+    const fileId = previewContext ? previewContext.fileId : activeFileId;
+    if (!fileId) return false;
+    event.preventDefault();
+    mark(fileId, key === "t");
+    return true;
+  }
+  return false;
 }
 function handleGroupsKeydown(event) {
   if (event.key !== "Enter" && event.key !== " ") return;
@@ -3029,6 +3058,7 @@ async function init() {
   $("previewKeep2").addEventListener("click", () => { if (previewContext) { mark(previewContext.fileId, false); } });
   $("previewTrash2").addEventListener("click", () => { if (previewContext) { mark(previewContext.fileId, true); } });
   document.addEventListener("keydown", (event) => {
+    if (markKey(event)) return;
     if (event.key === "Escape") {
       if ($("previewOverlay").classList.contains("is-open")) closePreview();
       else if ($("folderRulesOverlay").classList.contains("is-open")) closeFolderRules();
@@ -3526,7 +3556,7 @@ def build_empty_dirs_html():
 + _SHARED_CSS
 + """
 /* ── page-specific ─────────────────────────────────── */
-body { margin: 0; font: 13px/1.5 "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; }
+body { margin: 0; font: 13px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; }
 header { position: sticky; top: 0; z-index: 10; display: flex; gap: 12px; align-items: center; justify-content: space-between; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
 h1 { margin: 0; font-size: 15px; }
 .toolbar { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
