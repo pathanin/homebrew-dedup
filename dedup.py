@@ -4,6 +4,7 @@ sys.dont_write_bytecode = True
 
 import argparse
 import atexit
+import base64
 import errno
 import glob
 import json
@@ -849,6 +850,12 @@ def should_ignore_entry(name, is_dir, options):
     return name.endswith(options.ignore_file_suffixes)
 
 
+def is_junk_file(name, options):
+    # Empty-folder cleanup: only the configured system-junk names count as
+    # disposable. A hidden name alone (.env, .gitkeep) is user data.
+    return name in options.ignore_files or name.endswith(options.ignore_file_suffixes)
+
+
 _last_progress_print = 0.0
 
 
@@ -1105,7 +1112,7 @@ def find_empty_dirs(options):
             continue
         if should_ignore_entry(os.path.basename(dirpath), True, options):
             continue
-        if any(not should_ignore_entry(f, False, options) for f in filenames):
+        if any(not is_junk_file(f, options) for f in filenames):
             continue
         if all(
             should_ignore_entry(d, True, options)
@@ -1167,9 +1174,15 @@ def build_browser_payload(duplicate_groups):
     return {"groups": groups}
 
 
+REVEAL_PATH_ENV = "DEDUP_REVEAL_PATH"
+
+
 def build_windows_reveal_command(path):
+    # The path travels in an environment variable, never in the command line:
+    # anything after -Command is parsed as PowerShell, so a filename there
+    # would run as code. -EncodedCommand also sidesteps cmd-line quoting.
     script = r'''
-param([string]$Path)
+$Path = $env:DEDUP_REVEAL_PATH
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
@@ -1185,16 +1198,21 @@ Start-Process explorer.exe -ArgumentList ("/select,`"$Path`"")
 Start-Sleep -Milliseconds 200
 [WindowFocus]::SetForegroundWindow($hwnd) | Out-Null
 '''.strip()
-    return [
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    command = [
         "powershell.exe",
         "-NoProfile",
+        "-NonInteractive",
         "-ExecutionPolicy", "Bypass",
-        "-Command", script,
-        path,
+        "-EncodedCommand", encoded,
     ]
+    env = dict(os.environ)
+    env[REVEAL_PATH_ENV] = path
+    return command, env
 
 
 def build_reveal_command(path, current_os=CURRENT_OS):
+    """Return ``(argv, env)``; ``env`` is None when the inherited one suffices."""
     if current_os == OS_MACOS:
         return [
             "osascript",
@@ -1205,10 +1223,10 @@ def build_reveal_command(path, current_os=CURRENT_OS):
             "-e", "tell application frontApp to activate",
             "-e", "end run",
             path,
-        ]
+        ], None
     if current_os == OS_WINDOWS:
         return build_windows_reveal_command(path)
-    return ["xdg-open", os.path.dirname(path) or "."]
+    return ["xdg-open", os.path.dirname(path) or "."], None
 
 
 # Shared across both UI pages. Edit here to change the palette, base rules, or esc().
@@ -3333,7 +3351,8 @@ def make_browser_handler(state):
                 self.send_error(404)
                 return
             try:
-                subprocess.Popen(build_reveal_command(path))
+                command, env = build_reveal_command(path, CURRENT_OS)
+                subprocess.Popen(command, env=env)
                 self.send_json({"ok": True})
             except OSError:
                 self.send_error(500)
@@ -4168,7 +4187,19 @@ def revalidate_selected_file_exact(path, info, group, selected_paths, full_hash_
     if not valid:
         return False, reason
     if group.hash_name == FULL_HASH_NAME:
-        return True, ""
+        # The selection matched the full digest; a kept copy must still match it
+        # too, or this file may be the last one holding the content.
+        for peer in group.files:
+            if peer.path == path or peer.path in selected_paths:
+                continue
+            if peer.path not in full_hash_cache:
+                peer_valid, _peer_reason = revalidate_file(
+                    peer.path, peer.size, peer.mtime_ns, group.hash, group.hash_name
+                )
+                full_hash_cache[peer.path] = group.hash if peer_valid else None
+            if full_hash_cache[peer.path] == group.hash:
+                return True, ""
+        return False, "no exact kept duplicate"
 
     selected_hash = _cached_full_hash(path, full_hash_cache, full_hash_reader)
     if not selected_hash:
@@ -4508,6 +4539,10 @@ def trash_files(
 
     # Per-volume cached decision for "no trash on volume" situations.
     no_trash_strategy = {}
+    # Hashes for the pre-delete recheck; reset after every prompt because
+    # files can change while the user reads it.
+    recheck_hash_cache = {}
+    skipped_before_loop = result.skipped
     try:
         for path in validated_paths:
             try:
@@ -4524,8 +4559,24 @@ def trash_files(
                         prompt_func,
                     )
                     no_trash_strategy[no_trash.volume_root] = strategy
+                    recheck_hash_cache = {}
                 try:
                     if strategy == "permanent":
+                        # Irreversible, and validation may predate a long prompt:
+                        # repeat the exact check immediately before removal.
+                        info, group = expected[path]
+                        valid, reason = revalidate_selected_file_exact(
+                            path,
+                            info,
+                            group,
+                            selected_set,
+                            recheck_hash_cache,
+                            full_hash_preloader.get if full_hash_preloader is not None else None,
+                        )
+                        if not valid:
+                            print(f"Skipped before permanent delete ({reason}): {path}", file=sys.stderr)
+                            result.skipped += 1
+                            continue
                         _ensure_no_symlink_replacement(path)
                         os.remove(path)
                         trash_method = "permanent-delete"
@@ -4566,15 +4617,24 @@ def trash_files(
                 print(f"Moved to trash: {path}")
             result.trashed += 1
     except KeyboardInterrupt:
-        done = result.trashed + result.errors + result.skipped + result.permanently_deleted
-        remaining = len(validated_paths) - done
-        print(
-            f"\nInterrupted — {result.trashed} file(s) moved to Trash, "
-            f"{remaining} not yet processed.",
-            file=sys.stderr,
+        done = (
+            result.trashed
+            + result.errors
+            + (result.skipped - skipped_before_loop)
+            + result.permanently_deleted
         )
+        print_interrupt_summary(result, len(validated_paths) - done, "file")
         raise
     return result
+
+
+def print_interrupt_summary(result, remaining, item_label):
+    deleted = f"{result.permanently_deleted} permanently deleted, " if result.permanently_deleted else ""
+    print(
+        f"\nInterrupted — {result.trashed} {item_label}(s) moved to Trash, "
+        f"{deleted}{remaining} not yet processed.",
+        file=sys.stderr,
+    )
 
 
 def _deduplicate_by_ancestry(paths):
@@ -4609,7 +4669,7 @@ def is_effectively_empty_dir(path, options):
         if is_dir:
             if not is_effectively_empty_dir(entry.path, options):
                 return False
-        elif not should_ignore_entry(entry.name, False, options):
+        elif not is_junk_file(entry.name, options):
             return False
     return True
 
@@ -4718,12 +4778,7 @@ def trash_empty_dirs(
             result.trashed += 1
     except KeyboardInterrupt:
         done = result.trashed + result.errors + result.skipped + result.permanently_deleted
-        remaining = len(dirs) - done
-        print(
-            f"\nInterrupted — {result.trashed} folder(s) moved to Trash, "
-            f"{remaining} not yet processed.",
-            file=sys.stderr,
-        )
+        print_interrupt_summary(result, len(dirs) - done, "folder")
         raise
     return result
 
@@ -4779,8 +4834,8 @@ def parse_args(argv):
         "--fast-only",
         action="store_true",
         help=(
-            "Use sampled chunks only. This is the default and is much faster for huge files, "
-            "but duplicate detection is probabilistic."
+            "Use sampled chunks only. This is the default, so the flag has no effect; "
+            "sampled matches are still fully hashed against a kept copy before trashing."
         ),
     )
     parser.add_argument(
@@ -4977,8 +5032,8 @@ def find_and_process_duplicates(argv=None):
         )
     if not dry_run and result.skipped:
         print(
-            f"NOTE: {result.skipped} file(s) were skipped "
-            "(changed or moved since the scan).",
+            f"NOTE: {result.skipped} file(s) were skipped for safety "
+            "(see the reasons above).",
             file=sys.stderr,
         )
 

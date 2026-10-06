@@ -168,7 +168,7 @@ The review UI opens automatically at a local `http://127.0.0.1:7979` URL with a 
 ## Common Options
 
 ```text
---fast-only                 Use sampled chunks only. This is the default.
+--fast-only                 Use sampled chunks only. This is the default; the flag has no effect.
 --full-verify               Fully hash matching candidates for exact verification.
 -d, --dry-run               Review selections without moving files.
 --yes                       Skip the final browser confirmation when trashing.
@@ -189,7 +189,7 @@ Run `dedup --help` for the full option list.
 
 `dedup` does not permanently delete by default. Selected files are moved to Trash or to an existing same-volume recycle folder where supported.
 
-Before destructive actions, `dedup` revalidates selected files against the scanned duplicate groups, checks that size and modified time still match, and fully hashes sampled large-file matches against a kept peer. Background full hashing starts during browser review to reduce the final wait, and pending work outside the submitted selection is abandoned after you click Move. Empty-folder cleanup also rechecks that folders are still empty before removal.
+Before destructive actions, `dedup` revalidates selected files against the scanned duplicate groups: size and content hash must still match, and at least one unselected copy in the group must still be a regular file with identical full content. A file whose kept copy has vanished or changed is skipped, never trashed. Background full hashing starts during browser review to reduce the final wait, and pending work outside the submitted selection is abandoned after you click Move. Permanent deletion on volumes without a recycle bin repeats these checks immediately before each removal. Empty-folder cleanup also rechecks that folders are still empty before removal; only known system files such as `.DS_Store` count as empty, so a folder holding a hidden file like `.env` is kept.
 
 Risky scan roots are guarded. Filesystem roots are refused, home-directory root scans require `--allow-home-root`, and macOS Photos libraries require `--allow-photo-library`.
 

@@ -1,3 +1,4 @@
+import base64
 import contextlib
 import http.client
 import io
@@ -1072,6 +1073,164 @@ class TrashSafetyTests(unittest.TestCase):
             self.assertEqual(result.trashed, 0)
             self.assertIn("no exact kept duplicate", errors.getvalue())
 
+    def make_full_hash_pair(self, temp_dir):
+        keep = os.path.join(temp_dir, "keep.txt")
+        copy = os.path.join(temp_dir, "copy.txt")
+        for path in (keep, copy):
+            with open(path, "wb") as file_obj:
+                file_obj.write(b"same content")
+        group = dedup.DuplicateGroup(
+            dedup.get_full_content_hash(keep),
+            tuple(
+                dedup.FileInfo(path, os.path.getsize(path), os.stat(path).st_mtime_ns)
+                for path in (keep, copy)
+            ),
+            dedup.FULL_HASH_NAME,
+        )
+        return keep, copy, group
+
+    def assert_full_hash_copy_skipped(self, copy, group):
+        errors = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(errors):
+            result = dedup.trash_files([copy], [group], dry_run=True)
+        self.assertEqual(result.skipped, 1)
+        self.assertIn("no exact kept duplicate", errors.getvalue())
+        self.assertTrue(os.path.exists(copy))
+
+    def test_full_hash_selection_requires_kept_copy_to_still_exist(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            keep, copy, group = self.make_full_hash_pair(temp_dir)
+            os.remove(keep)
+            self.assert_full_hash_copy_skipped(copy, group)
+
+    def test_full_hash_selection_requires_kept_copy_content_unchanged(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            keep, copy, group = self.make_full_hash_pair(temp_dir)
+            with open(keep, "wb") as file_obj:
+                file_obj.write(b"diff content")
+            self.assert_full_hash_copy_skipped(copy, group)
+
+    @unittest.skipIf(os.name == "nt", "symlink creation needs privileges on Windows")
+    def test_full_hash_selection_rejects_kept_copy_replaced_by_symlink(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            keep, copy, group = self.make_full_hash_pair(temp_dir)
+            os.remove(keep)
+            # A symlink to the selected file hashes identically but is not a copy.
+            os.symlink(copy, keep)
+            self.assert_full_hash_copy_skipped(copy, group)
+
+    def test_full_hash_selection_passes_with_intact_kept_copy(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _keep, copy, group = self.make_full_hash_pair(temp_dir)
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = dedup.trash_files([copy], [group], dry_run=True)
+            self.assertEqual(result.skipped, 0)
+
+    def no_trash_error(self, path, _send_to_trash=None):
+        cause = OSError("volume has no trash")
+        raise dedup.VolumeHasNoTrashError(path, "/Volumes/NoTrash", cause, cause)
+
+    def test_permanent_delete_rechecks_kept_copy_after_prompt(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            keep, copy, group = self.make_full_hash_pair(temp_dir)
+
+            def prompt(volume_root, files, **_kwargs):
+                # The kept copy changes while the user reads the prompt.
+                os.remove(keep)
+                return "permanent"
+
+            errors = io.StringIO()
+            with mock.patch.object(dedup, "load_send_to_trash", return_value=mock.Mock()), \
+                    mock.patch.object(dedup, "move_to_trash_safely", side_effect=self.no_trash_error), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(errors):
+                result = dedup.trash_files(
+                    [copy], [group], dry_run=False, interactive=True, prompt_func=prompt,
+                )
+
+            self.assertEqual(result.permanently_deleted, 0)
+            self.assertEqual(result.skipped, 1)
+            self.assertIn("no exact kept duplicate", errors.getvalue())
+            self.assertTrue(os.path.exists(copy))
+
+    def test_permanent_delete_rechecks_selected_file_after_prompt(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            _keep, copy, group = self.make_full_hash_pair(temp_dir)
+
+            def prompt(volume_root, files, **_kwargs):
+                with open(copy, "wb") as file_obj:
+                    file_obj.write(b"new edits!!!")
+                return "permanent"
+
+            with mock.patch.object(dedup, "load_send_to_trash", return_value=mock.Mock()), \
+                    mock.patch.object(dedup, "move_to_trash_safely", side_effect=self.no_trash_error), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                result = dedup.trash_files(
+                    [copy], [group], dry_run=False, interactive=True, prompt_func=prompt,
+                )
+
+            self.assertEqual(result.permanently_deleted, 0)
+            self.assertEqual(result.skipped, 1)
+            self.assertTrue(os.path.exists(copy))
+
+    def test_permanent_delete_proceeds_when_recheck_passes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            keep, copy, group = self.make_full_hash_pair(temp_dir)
+            with mock.patch.object(dedup, "load_send_to_trash", return_value=mock.Mock()), \
+                    mock.patch.object(dedup, "move_to_trash_safely", side_effect=self.no_trash_error), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                result = dedup.trash_files(
+                    [copy], [group], dry_run=False, interactive=True,
+                    prompt_func=lambda *_args, **_kwargs: "permanent",
+                )
+
+            self.assertEqual(result.permanently_deleted, 1)
+            self.assertFalse(os.path.exists(copy))
+            self.assertTrue(os.path.exists(keep))
+
+    def test_interrupt_summary_counts_only_files_in_trash_loop(self):
+        paths = ["/tmp/a.bin", "/tmp/b.bin", "/tmp/c.bin"]
+        group = dedup.DuplicateGroup("hash", tuple(dedup.FileInfo(p, 4, 1) for p in paths[:2]))
+        calls = []
+
+        def trash(path, _send):
+            calls.append(path)
+            if len(calls) == 2:
+                raise KeyboardInterrupt
+            return "send2trash"
+
+        errors = io.StringIO()
+        with mock.patch.object(dedup, "load_send_to_trash", return_value=mock.Mock()), \
+                mock.patch.object(dedup, "revalidate_selected_file_exact", return_value=(True, "")), \
+                mock.patch.object(dedup, "move_to_trash_safely", side_effect=trash), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(errors):
+            with self.assertRaises(KeyboardInterrupt):
+                # c.bin is outside the group, so it is skipped before the loop.
+                dedup.trash_files(paths, [group], dry_run=False)
+
+        self.assertIn("1 file(s) moved to Trash, 1 not yet processed", errors.getvalue())
+
+    def test_interrupt_summary_reports_permanent_deletions(self):
+        paths = ["/tmp/a.bin", "/tmp/b.bin"]
+        group = dedup.DuplicateGroup("hash", tuple(dedup.FileInfo(p, 4, 1) for p in paths))
+        removed = []
+
+        def remove(path):
+            removed.append(path)
+            if len(removed) == 2:
+                raise KeyboardInterrupt
+
+        errors = io.StringIO()
+        with mock.patch.object(dedup, "load_send_to_trash", return_value=mock.Mock()), \
+                mock.patch.object(dedup, "revalidate_selected_file_exact", return_value=(True, "")), \
+                mock.patch.object(dedup, "move_to_trash_safely", side_effect=self.no_trash_error), \
+                mock.patch.object(dedup.os, "remove", side_effect=remove), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(errors):
+            with self.assertRaises(KeyboardInterrupt):
+                dedup.trash_files(paths, [group], dry_run=False, permanent_on_no_trash=True)
+
+        self.assertIn("1 permanently deleted", errors.getvalue())
+        self.assertIn("1 not yet processed", errors.getvalue())
+
     def test_full_hash_preloader_restrict_to_reports_remaining_bytes(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             paths = []
@@ -1161,7 +1320,7 @@ class TrashSafetyTests(unittest.TestCase):
         with mock.patch.object(dedup, "CURRENT_OS", dedup.OS_MACOS):
             with mock.patch.object(dedup, "MACOS_TRASH_CMD", "/usr/bin/trash"):
                 with mock.patch.object(dedup, "load_send_to_trash", return_value=send_to_trash):
-                    with mock.patch.object(dedup, "revalidate_file", return_value=(True, "")):
+                    with mock.patch.object(dedup, "revalidate_selected_file_exact", return_value=(True, "")):
                         with mock.patch.object(dedup, "move_to_trash_with_cmd") as trash_cmd:
                             with contextlib.redirect_stdout(io.StringIO()):
                                 result = dedup.trash_files([path], [group], dry_run=False)
@@ -1276,7 +1435,7 @@ class TrashSafetyTests(unittest.TestCase):
         with mock.patch.object(dedup, "CURRENT_OS", dedup.OS_MACOS):
             with mock.patch.object(dedup, "MACOS_TRASH_CMD", "/usr/bin/trash"):
                 with mock.patch.object(dedup, "load_send_to_trash", return_value=send_to_trash):
-                    with mock.patch.object(dedup, "revalidate_file", return_value=(True, "")):
+                    with mock.patch.object(dedup, "revalidate_selected_file_exact", return_value=(True, "")):
                         with mock.patch.object(
                             dedup, "move_to_trash_with_cmd", side_effect=OSError("volume has no trash")
                         ):
@@ -1316,7 +1475,7 @@ class TrashSafetyTests(unittest.TestCase):
         with mock.patch.object(dedup, "CURRENT_OS", dedup.OS_MACOS):
             with mock.patch.object(dedup, "MACOS_TRASH_CMD", "/usr/bin/trash"):
                 with mock.patch.object(dedup, "load_send_to_trash", return_value=send_to_trash):
-                    with mock.patch.object(dedup, "revalidate_file", return_value=(True, "")):
+                    with mock.patch.object(dedup, "revalidate_selected_file_exact", return_value=(True, "")):
                         with mock.patch.object(
                             dedup, "move_to_trash_with_cmd", side_effect=OSError("volume has no trash")
                         ):
@@ -1346,7 +1505,7 @@ class TrashSafetyTests(unittest.TestCase):
         with mock.patch.object(dedup, "CURRENT_OS", dedup.OS_MACOS):
             with mock.patch.object(dedup, "MACOS_TRASH_CMD", "/usr/bin/trash"):
                 with mock.patch.object(dedup, "load_send_to_trash", return_value=send_to_trash):
-                    with mock.patch.object(dedup, "revalidate_file", return_value=(True, "")):
+                    with mock.patch.object(dedup, "revalidate_selected_file_exact", return_value=(True, "")):
                         with mock.patch.object(
                             dedup, "move_to_trash_with_cmd", side_effect=OSError("volume has no trash")
                         ):
@@ -1375,7 +1534,7 @@ class TrashSafetyTests(unittest.TestCase):
         with mock.patch.object(dedup, "CURRENT_OS", dedup.OS_MACOS):
             with mock.patch.object(dedup, "MACOS_TRASH_CMD", "/usr/bin/trash"):
                 with mock.patch.object(dedup, "load_send_to_trash", return_value=send_to_trash):
-                    with mock.patch.object(dedup, "revalidate_file", return_value=(True, "")):
+                    with mock.patch.object(dedup, "revalidate_selected_file_exact", return_value=(True, "")):
                         with mock.patch.object(
                             dedup, "move_to_trash_with_cmd", side_effect=OSError("volume has no trash")
                         ):
@@ -1402,7 +1561,7 @@ class TrashSafetyTests(unittest.TestCase):
         with mock.patch.object(dedup, "CURRENT_OS", dedup.OS_MACOS):
             with mock.patch.object(dedup, "MACOS_TRASH_CMD", "/usr/bin/trash"):
                 with mock.patch.object(dedup, "load_send_to_trash", return_value=send_to_trash):
-                    with mock.patch.object(dedup, "revalidate_file", return_value=(True, "")):
+                    with mock.patch.object(dedup, "revalidate_selected_file_exact", return_value=(True, "")):
                         with mock.patch.object(
                             dedup, "move_to_trash_with_cmd", side_effect=OSError("volume has no trash")
                         ):
@@ -1426,7 +1585,7 @@ class TrashSafetyTests(unittest.TestCase):
         with mock.patch.object(dedup, "CURRENT_OS", dedup.OS_MACOS):
             with mock.patch.object(dedup, "MACOS_TRASH_CMD", "/usr/bin/trash"):
                 with mock.patch.object(dedup, "load_send_to_trash", return_value=send_to_trash):
-                    with mock.patch.object(dedup, "revalidate_file", return_value=(True, "")):
+                    with mock.patch.object(dedup, "revalidate_selected_file_exact", return_value=(True, "")):
                         with mock.patch.object(
                             dedup, "move_to_trash_with_cmd", side_effect=OSError("volume has no trash")
                         ):
@@ -1708,6 +1867,39 @@ class EmptyDirTrashTests(unittest.TestCase):
             self.assertEqual(result.trashed, 0)
             load_trash.assert_called_once()
             self.assertTrue(os.path.isdir(empty_dir))
+
+    def test_folder_with_only_hidden_user_file_is_not_empty(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            folder = os.path.join(temp_dir, "config")
+            os.mkdir(folder)
+            with open(os.path.join(folder, ".env"), "wb") as file_obj:
+                file_obj.write(b"SECRET=1")
+            options = self.make_options(temp_dir)
+
+            self.assertEqual(dedup.find_empty_dirs(options), [])
+            self.assertFalse(dedup.is_effectively_empty_dir(folder, options))
+
+    def test_hidden_file_inside_hidden_subfolder_keeps_parent_non_empty(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            folder = os.path.join(temp_dir, "project")
+            os.makedirs(os.path.join(folder, ".config"))
+            with open(os.path.join(folder, ".config", ".token"), "wb") as file_obj:
+                file_obj.write(b"t")
+            options = self.make_options(temp_dir)
+
+            self.assertFalse(dedup.is_effectively_empty_dir(folder, options))
+
+    def test_folder_with_only_system_junk_is_still_empty(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            folder = os.path.join(temp_dir, "junk")
+            os.mkdir(folder)
+            for name in (".DS_Store", "Thumbs.db"):
+                with open(os.path.join(folder, name), "wb") as file_obj:
+                    file_obj.write(b"x")
+            options = self.make_options(temp_dir)
+
+            self.assertEqual(dedup.find_empty_dirs(options), [folder])
+            self.assertTrue(dedup.is_effectively_empty_dir(folder, options))
 
     def test_find_empty_dirs_aborts_when_scan_root_changes(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2253,6 +2445,52 @@ class PhotoLibraryConfirmTests(unittest.TestCase):
                     ["--dry-run", "--allow-photo-library", lib]
                 )
         self.assertEqual(result, 0)
+
+
+class RevealCommandTests(unittest.TestCase):
+    HOSTILE_PATH = r"C:\dupes\a; Start-Process calc $(whoami) 'x'.txt"
+
+    def test_windows_path_never_appears_in_command_line(self):
+        command, env = dedup.build_reveal_command(self.HOSTILE_PATH, dedup.OS_WINDOWS)
+        for arg in command:
+            self.assertNotIn("dupes", arg)
+        self.assertIn("-EncodedCommand", command)
+        self.assertEqual(env[dedup.REVEAL_PATH_ENV], self.HOSTILE_PATH)
+
+    def test_windows_script_reads_path_from_environment(self):
+        command, _env = dedup.build_reveal_command(self.HOSTILE_PATH, dedup.OS_WINDOWS)
+        encoded = command[command.index("-EncodedCommand") + 1]
+        script = base64.b64decode(encoded).decode("utf-16-le")
+        self.assertIn(f"$env:{dedup.REVEAL_PATH_ENV}", script)
+        self.assertIn("/select,", script)
+
+    def test_non_windows_commands_need_no_environment(self):
+        for current_os in (dedup.OS_MACOS, dedup.OS_LINUX):
+            command, env = dedup.build_reveal_command("/tmp/a.txt", current_os)
+            self.assertIsNone(env)
+            self.assertTrue(command)
+
+    def test_reveal_endpoint_passes_environment_to_popen(self):
+        group = dedup.DuplicateGroup(
+            "h", (dedup.FileInfo("/tmp/a.txt", 1, 1), dedup.FileInfo("/tmp/b.txt", 1, 2)),
+        )
+        state = dedup.BrowserSelectionState([group])
+        file_id = state.groups[0]["files"][0]["id"]
+        server = ThreadingHTTPServer(("127.0.0.1", 0), dedup.make_browser_handler(state))
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with mock.patch.object(dedup, "CURRENT_OS", dedup.OS_WINDOWS), \
+                    mock.patch.object(dedup.subprocess, "Popen") as popen:
+                url = f"http://127.0.0.1:{server.server_port}/reveal/{file_id}?token={state.session_id}"
+                with urllib.request.urlopen(url, timeout=5) as response:
+                    self.assertEqual(response.status, 200)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+        env = popen.call_args.kwargs["env"]
+        self.assertEqual(env[dedup.REVEAL_PATH_ENV], state._path_by_id[file_id])
 
 
 class FocusTerminalTests(unittest.TestCase):
