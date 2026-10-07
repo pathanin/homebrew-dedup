@@ -1107,17 +1107,21 @@ def find_empty_dirs(options):
     empty_set = set()
     result = []
 
-    for dirpath, dirnames, filenames in os.walk(scan_root, topdown=False, followlinks=False):
+    # Walk top-down so ignored directories are pruned (nothing inside .git or
+    # node_modules is ever offered), then judge children before parents.
+    walked = []
+    for dirpath, dirnames, filenames in os.walk(scan_root, followlinks=False):
+        ignored = [d for d in dirnames if should_ignore_entry(d, True, options)]
+        dirnames[:] = [d for d in dirnames if d not in ignored]
+        walked.append((dirpath, list(dirnames), ignored, filenames))
+
+    for dirpath, dirnames, ignored, filenames in reversed(walked):
         if dirpath == scan_root:
-            continue
-        if should_ignore_entry(os.path.basename(dirpath), True, options):
             continue
         if any(not is_junk_file(f, options) for f in filenames):
             continue
-        if all(
-            should_ignore_entry(d, True, options)
-            or os.path.join(dirpath, d) in empty_set
-            for d in dirnames
+        if all(os.path.join(dirpath, d) in empty_set for d in dirnames) and all(
+            is_effectively_empty_dir(os.path.join(dirpath, d), options) for d in ignored
         ):
             empty_set.add(dirpath)
             result.append(dirpath)

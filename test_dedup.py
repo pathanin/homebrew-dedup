@@ -1888,6 +1888,32 @@ class EmptyDirTrashTests(unittest.TestCase):
             options = self.make_options(temp_dir)
 
             self.assertFalse(dedup.is_effectively_empty_dir(folder, options))
+            self.assertEqual(dedup.find_empty_dirs(options), [])
+
+    def test_empty_dirs_inside_ignored_folders_are_not_listed(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            git_tags = os.path.join(temp_dir, "repo", ".git", "refs", "tags")
+            modules = os.path.join(temp_dir, "app", "node_modules", "pkg", "empty")
+            os.makedirs(git_tags)
+            os.makedirs(modules)
+            for path in (os.path.join(temp_dir, "repo", ".git", "HEAD"),
+                         os.path.join(temp_dir, "app", "node_modules", "pkg", "index.js")):
+                with open(path, "wb") as file_obj:
+                    file_obj.write(b"x")
+            options = self.make_options(temp_dir)
+
+            self.assertEqual(dedup.find_empty_dirs(options), [])
+
+    def test_ignored_subfolder_that_is_truly_empty_keeps_parent_empty(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            folder = os.path.join(temp_dir, "project")
+            os.makedirs(os.path.join(folder, "__pycache__"))
+            with open(os.path.join(folder, "__pycache__", ".DS_Store"), "wb") as file_obj:
+                file_obj.write(b"x")
+            options = self.make_options(temp_dir)
+
+            self.assertEqual(dedup.find_empty_dirs(options), [folder])
+            self.assertTrue(dedup.is_effectively_empty_dir(folder, options))
 
     def test_folder_with_only_system_junk_is_still_empty(self):
         with tempfile.TemporaryDirectory() as temp_dir:
