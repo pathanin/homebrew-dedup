@@ -5,3 +5,6 @@ __pycache__/
 .omo/
 test_dedup.py
 test_popup_port.py
+.agents/
+.claude/
+skills-lock.json
