@@ -117,6 +117,23 @@ class CliTests(unittest.TestCase):
 
         self.assertTrue(args.permanent_on_no_trash)
 
+    def test_empty_dir_scan_runs_by_default(self):
+        args = dedup.parse_args(["."])
+
+        self.assertTrue(args.clean_empty_dirs)
+
+    def test_skip_empty_dirs_flag_disables_empty_dir_scan(self):
+        for flag in ("--skip-empty-dirs", "-E"):
+            args = dedup.parse_args([flag, "."])
+
+            self.assertFalse(args.clean_empty_dirs)
+
+    def test_clean_empty_dirs_flag_is_still_accepted(self):
+        for flag in ("--clean-empty-dirs", "-e"):
+            args = dedup.parse_args([flag, "."])
+
+            self.assertTrue(args.clean_empty_dirs)
+
     def test_default_port_is_7979(self):
         args = dedup.parse_args(["."])
 

@@ -4866,15 +4866,25 @@ def parse_args(argv):
             "remote files but keeps them recoverable."
         ),
     )
-    parser.add_argument(
-        "-e", "--clean-empty-dirs",
-        action="store_true",
+    empty_dirs_group = parser.add_mutually_exclusive_group()
+    empty_dirs_group.add_argument(
+        "-E", "--skip-empty-dirs",
+        dest="clean_empty_dirs",
+        action="store_false",
         help=(
-            "After the duplicate-file phase, scan for empty directories "
-            "(folders containing only ignored system files or other empty "
-            "folders) and open a browser UI to select which ones to trash."
+            "Skip the empty-folder scan. By default, after the duplicate-file "
+            "phase, dedup scans for empty directories (folders containing only "
+            "ignored system files or other empty folders) and opens a browser "
+            "UI to select which ones to trash."
         ),
     )
+    empty_dirs_group.add_argument(
+        "-e", "--clean-empty-dirs",
+        dest="clean_empty_dirs",
+        action="store_true",
+        help="Scan for empty folders after the duplicate-file phase. This is the default, so the flag has no effect.",
+    )
+    parser.set_defaults(clean_empty_dirs=True)
     parser.add_argument(
         "--port",
         type=int,

@@ -21,7 +21,7 @@ It is built for large, messy folders where you want fast duplicate detection, vi
 - Media metadata when optional tools are installed: duration, dimensions, codec, bitrate, and EXIF
 - Recoverable cleanup by default: Trash (Recycle Bin on Windows), `/usr/bin/trash` on macOS external volumes, or same-volume NAS recycle folders when available
 - Safety checks for filesystem roots, home root scans, macOS Photos libraries, stale selections, and symlink replacement
-- Optional empty-folder cleanup after duplicate review
+- Empty-folder cleanup after duplicate review (skip with `--skip-empty-dirs`)
 
 ## Install
 
@@ -131,10 +131,10 @@ Fully hash candidate matches after the fast prefilter:
 dedup /path/to/folder --full-verify
 ```
 
-Review empty folders after duplicate-file cleanup:
+Empty folders are reviewed after duplicate-file cleanup by default. Skip that step:
 
 ```sh
-dedup /path/to/folder --clean-empty-dirs
+dedup /path/to/folder --skip-empty-dirs
 ```
 
 Use a fixed local UI port:
@@ -177,7 +177,7 @@ The review UI opens automatically at a local `http://127.0.0.1:7979` URL with a 
 --ignore-file NAME          Ignore an additional file name or suffix.
 --allow-home-root           Allow scanning your home directory root.
 --allow-photo-library       Allow scanning inside macOS .photoslibrary packages.
--e, --clean-empty-dirs      Review and trash empty directories after file cleanup.
+-E, --skip-empty-dirs       Skip the empty-folder review that runs after file cleanup.
 --allow-slow-local-trash    Allow last-resort copies to a local trash fallback (macOS ~/.Trash)
 --permanent-on-no-trash     Permanently delete when no recoverable trash route works.
 --port PORT                 Port for the local browser UI.
