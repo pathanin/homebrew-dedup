@@ -2530,6 +2530,15 @@ class TerminalStyleTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"TERM": "dumb"}):
             self.assertEqual(dedup.paint("x", "danger", FakeTty()), "x")
 
+    def test_progress_line_on_dumb_terminal_has_no_escape_codes(self):
+        out = FakeTty()
+        dedup._last_progress_print = 0.0
+        with mock.patch.dict(os.environ, {"TERM": "dumb"}), contextlib.redirect_stdout(out):
+            dedup.print_progress("scan", 1, 2, force=True)
+            dedup.finish_progress("done")
+        self.assertNotIn("\x1b", out.getvalue())
+        self.assertTrue(out.getvalue().endswith("\ndone\n"))
+
     def test_ascii_terminal_gets_ascii_glyphs(self):
         stream = FakeTty(encoding="ascii")
         with mock.patch.dict(os.environ, {"NO_COLOR": "1"}):

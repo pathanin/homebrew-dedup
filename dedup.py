@@ -349,14 +349,20 @@ def stream_is_tty(stream=None):
         return False
 
 
-def stream_supports_color(stream=None):
-    if os.environ.get("NO_COLOR") or os.environ.get("TERM") == "dumb":
-        return False
-    if not stream_is_tty(stream):
+def stream_supports_cursor_control(stream=None):
+    # Separate from color: NO_COLOR asks for no color, not for literal "\x1b[K"
+    # junk in place of a cleanly redrawn progress line.
+    if os.environ.get("TERM") == "dumb" or not stream_is_tty(stream):
         return False
     if CURRENT_OS == OS_WINDOWS:
         return _enable_windows_vt()
     return True
+
+
+def stream_supports_color(stream=None):
+    if os.environ.get("NO_COLOR"):
+        return False
+    return stream_supports_cursor_control(stream)
 
 
 def glyphs(stream=None):
@@ -757,13 +763,17 @@ def render_thumbnail(path, width=360, height=240, thumb_index=0):
                 timeout=20,
             )
     except subprocess.TimeoutExpired:
-        print(f"[dedup] ffmpeg thumbnail timed out: {path}", file=sys.stderr)
+        print_item("dim", "Thumbnail unavailable", f" (ffmpeg timed out): {path}", sys.stderr)
         return None
     except OSError:
         return None
     if completed.returncode != 0:
-        msg = completed.stderr.decode("utf-8", errors="replace").strip()
-        print(f"[dedup] ffmpeg thumbnail failed (exit {completed.returncode}): {msg or '(no output)'}", file=sys.stderr)
+        # ffmpeg explains a failure over several lines; its last line is the reason.
+        lines = completed.stderr.decode("utf-8", errors="replace").strip().splitlines()
+        reason = lines[-1].strip() if lines else "no output"
+        print_item(
+            "dim", "Thumbnail unavailable", f" (ffmpeg exit {completed.returncode}: {reason}): {path}", sys.stderr
+        )
         return None
 
     return completed.stdout
@@ -1021,7 +1031,7 @@ _progress_line_open = False
 def _write_progress(text):
     global _progress_line_open
     _progress_line_open = True
-    clear = "\x1b[K" if stream_is_tty(sys.stdout) else ""
+    clear = "\x1b[K" if stream_supports_cursor_control(sys.stdout) else ""
     print(f"\r  {text}{clear}", end="", flush=True)
 
 
@@ -1063,7 +1073,7 @@ def finish_progress(done_line=None):
     if done_line is None:
         print()
         return
-    if was_open and stream_is_tty(sys.stdout):
+    if was_open and stream_supports_cursor_control(sys.stdout):
         print("\r\x1b[K", end="")
     elif was_open:
         print()
@@ -5264,7 +5274,7 @@ class RunReport:
 
 
 def print_trash_heading(count, noun, dry_run):
-    print()
+    # Always follows a browser session, which already ends with a blank line.
     if dry_run:
         print_status(
             "warn", f"DRY RUN {glyphs()['dot']} {plural(count, noun)} would be moved to the Trash", "nothing is touched"
@@ -5274,7 +5284,6 @@ def print_trash_heading(count, noun, dry_run):
 
 
 def print_nothing_selected(noun):
-    print()
     print_status("plain", f"No {noun}s selected", "nothing was changed")
 
 

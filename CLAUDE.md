@@ -39,16 +39,20 @@ Manual browser UI verification: `python3 dedup.py testfile/ --dry-run`
 
 | Lines | What's there |
 |---|---|
-| 1–90 | Imports, extension sets, tuning constants (`MAX_THUMBNAIL_CACHE_SIZE`, `CHUNK_*`, etc.) |
-| ~91–500 | Utilities: media detection, ffmpeg thumbnails, text preview, hashing, thumbnail cache |
-| ~500–900 | Duplicate scanning: size grouping, fast sampled hashing, full-content verify, `build_browser_payload` |
-| **~1000–1050** | **`_SHARED_CSS`** — palette, dark mode, base button/modal rules |
-| **~1051–1060** | **`_SHARED_JS`** — `esc()` HTML-escaping utility and popup window IIFE |
-| **~1060–2900** | **`build_browser_html()`** — duplicate review UI (ffmpeg-only thumbnail path: `ffmpegThumbUrl`, `hydrateVideoFile`, `hydrateVideoMetadata`, `startGroupVideoThumbCycle`, `startPaneVideoCycle`, `renderPreview`) |
-| ~2900–3050 | `sanitize_browser_trash_selection` + trash-selection helpers |
-| ~3050–3300 | HTTP handler: `make_browser_handler`, `do_GET`, `do_POST`, `serve_file_with_range`, `serve_media`/`serve_pdf`/`serve_thumbnail`/`serve_meta`/`serve_text` |
-| **~3300–3600** | **`build_empty_dirs_html()`** — empty folder cleanup UI |
-| ~3600–4400 | Empty-dir handler, Trash logic, CLI argument parsing, `find_and_process_duplicates()` |
+| ~1–190 | Imports, extension sets, tuning constants (`MAX_THUMBNAIL_CACHE_SIZE`, `CHUNK_*`, etc.), hash selection (`make_hasher`) |
+| ~190–295 | Dataclasses (`DuplicateGroup`, `ScanOptions`, `ScanStats`, `TrashResult`), OS detection, `format_size` |
+| **~295–500** | **Terminal presentation** — `paint`, `glyphs`, `print_phase_header`, `print_status`, `print_card`, `print_alert`, `print_item` |
+| ~500–1110 | Utilities: media detection, ffmpeg thumbnails, text preview, hashing, thumbnail cache, progress lines |
+| ~1110–1390 | Duplicate scanning: size grouping, fast sampled hashing, full-content verify, verdict lines, scan header; `find_empty_dirs` |
+| ~1390–1495 | `build_browser_payload` |
+| **~1495–1550** | **`_SHARED_CSS`** — palette, dark mode, base button/modal rules |
+| **~1551–1562** | **`_SHARED_JS`** — `esc()` HTML-escaping utility and popup window IIFE |
+| **~1563–3400** | **`build_browser_html()`** — duplicate review UI (ffmpeg-only thumbnail path: `ffmpegThumbUrl`, `hydrateVideoFile`, `hydrateVideoMetadata`, `startGroupVideoThumbCycle`, `startPaneVideoCycle`, `renderPreview`) |
+| ~3400–3520 | `sanitize_browser_trash_selection` + trash-selection helpers |
+| ~3520–3835 | HTTP handler: `make_browser_handler`, `do_GET`, `do_POST`, `serve_file_with_range`, `serve_media`/`serve_pdf`/`serve_thumbnail`/`serve_meta`/`serve_text`; `_run_browser_session` (the YOUR TURN banner) |
+| **~3835–4095** | **`build_empty_dirs_html()`** — empty folder cleanup UI |
+| ~4095–5190 | Empty-dir handler, Trash logic, CLI argument parsing |
+| ~5190–end | `find_and_process_duplicates()`, `RunReport`, per-phase runners, `print_final_summary()` |
 
 ## Shared UI constants
 
@@ -84,7 +88,7 @@ Constants in `UPPER_SNAKE_CASE`, classes in `PascalCase`, functions and variable
 
 **`serve_media()` kind guard** — only `('image', 'video', 'audio')` kinds are served at `/media/`. PDFs go through `serve_pdf()` at `/pdf/`. Text goes through `serve_text()` at `/text/`. Do not relax this without considering the MIME surface.
 
-**Hash algorithm is chosen at import, not hardcoded** — `select_hash_name()` micro-benchmarks blake2b against sha256 (~12 ms) and sets `FULL_HASH_NAME`/`FAST_HASH_NAME`. hashlib routes sha256 through OpenSSL, so it runs ~2x blake2b where the CPU has SHA extensions (ARMv8 crypto, x86 SHA-NI) and ~0.5x where it does not; platform strings do not reliably report those extensions. sha256 must beat blake2b by `HASH_PROBE_MARGIN` before it is picked, so timing noise cannot flip the choice. The probe must resolve before line ~137, where `DuplicateGroup.hash_name` uses `FULL_HASH_NAME` as a dataclass field default — that is why `make_hasher` sits with the constants instead of with the other hash helpers. Nothing persists a digest to disk, so the choice may differ between machines or runs without breaking anything.
+**Hash algorithm is chosen at import, not hardcoded** — `select_hash_name()` micro-benchmarks blake2b against sha256 (~12 ms) and sets `FULL_HASH_NAME`/`FAST_HASH_NAME`. hashlib routes sha256 through OpenSSL, so it runs ~2x blake2b where the CPU has SHA extensions (ARMv8 crypto, x86 SHA-NI) and ~0.5x where it does not; platform strings do not reliably report those extensions. sha256 must beat blake2b by `HASH_PROBE_MARGIN` before it is picked, so timing noise cannot flip the choice. The probe must resolve before line ~195, where `DuplicateGroup.hash_name` uses `FULL_HASH_NAME` as a dataclass field default — that is why `make_hasher` sits with the constants instead of with the other hash helpers. Nothing persists a digest to disk, so the choice may differ between machines or runs without breaking anything.
 
 **`FullHashPreloader.in_flight`** — `get()` blocks while a path sits in `in_flight`, waiting for the worker thread to publish the digest. Both the worker loop and `get()` therefore compute hashes inside `try/except Exception … finally`, so a crash can never leave a path in `in_flight` with no thread left to clear it. Removing either guard turns any exception into a silent, permanent hang.
 
