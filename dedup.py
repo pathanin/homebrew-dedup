@@ -16,7 +16,9 @@ import shutil
 import subprocess
 import stat
 import threading
+import textwrap
 import time
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import urllib.parse
 import urllib.request
@@ -228,48 +230,7 @@ class ScanStats:
     cloud_skipped_paths: list = field(default_factory=list)
     ignored_dir_counts: Counter = field(default_factory=Counter)
     ignored_hidden_count: int = 0
-
-    def print_summary(self, result=None):
-        print("\nSummary")
-        print("-" * 60)
-        print(f"Scanned files:     {self.scanned}")
-        print(f"Scanned dirs:      {self.dirs_scanned}")
-        print(f"Ignored entries:   {self.ignored}")
-        if self.unreadable:
-            print(f"WARNING: {self.unreadable} unreadable file(s) skipped — check file permissions.")
-            for path in self.unreadable_paths[:10]:
-                print(f"  unreadable: {path}")
-            if self.unreadable > len(self.unreadable_paths[:10]):
-                print(f"  ... and {self.unreadable - len(self.unreadable_paths[:10])} more")
-        else:
-            print(f"Unreadable entries: 0")
-        if self.cloud_skipped:
-            print(f"Cloud placeholders skipped: {self.cloud_skipped} (iCloud files not yet downloaded locally)")
-            for path in self.cloud_skipped_paths[:10]:
-                print(f"  cloud placeholder: {path}")
-            if self.cloud_skipped > len(self.cloud_skipped_paths[:10]):
-                print(f"  ... and {self.cloud_skipped - len(self.cloud_skipped_paths[:10])} more")
-        if self.ignored_dir_counts:
-            common_dirs = ", ".join(
-                f"{name} ({count})"
-                for name, count in self.ignored_dir_counts.most_common(8)
-            )
-            print(f"Ignored directories by name: {common_dirs}")
-        if self.ignored_hidden_count:
-            print(f"Hidden entries skipped: {self.ignored_hidden_count} (use --include-hidden to scan them)")
-        print(f"Size candidates:   {self.size_candidates}")
-        print(f"Duplicate groups:  {self.duplicate_groups}")
-        print(f"Duplicate files:   {self.duplicate_files}")
-        if result:
-            print(f"Selected files:    {result.selected}")
-            print(f"Skipped files:     {result.skipped}")
-            if result.dry_run:
-                print("Mode:              dry-run")
-            else:
-                print(f"Trashed files:     {result.trashed}")
-                if result.permanently_deleted:
-                    print(f"Permanently deleted: {result.permanently_deleted}")
-                print(f"Trash errors:      {result.errors}")
+    reclaimable_bytes: int = 0
 
 
 @dataclass
@@ -280,6 +241,7 @@ class TrashResult:
     skipped: int = 0
     errors: int = 0
     dry_run: bool = True
+    bytes_freed: int = 0
 
 
 class VolumeHasNoTrashError(Exception):
@@ -328,6 +290,202 @@ def format_size(size_bytes):
     if size_bytes < 1024**3:
         return f"{size_bytes / 1024**2:.2f} MB"
     return f"{size_bytes / 1024**3:.2f} GB"
+
+
+# --- Terminal presentation -------------------------------------------------
+# Color and glyph support are decided per write from the stream itself, never
+# cached at import: tests and pipes swap sys.stdout/sys.stderr freely, and an
+# ANSI code that leaks into captured or piped output is noise.
+
+ANSI_BOLD = "1"
+ANSI_DIM = "2"
+ANSI_RED = "31"
+ANSI_GREEN = "32"
+ANSI_YELLOW = "33"
+TONE_CODES = {
+    "ok": (ANSI_BOLD, ANSI_GREEN),
+    "warn": (ANSI_BOLD, ANSI_YELLOW),
+    "danger": (ANSI_BOLD, ANSI_RED),
+    "strong": (ANSI_BOLD,),
+    "action": (ANSI_BOLD,),
+    "dim": (ANSI_DIM,),
+    "plain": (),
+}
+UNICODE_GLYPHS = {
+    "ok": "✓", "warn": "!", "danger": "✗", "action": "▸", "dot": "·", "arrow": "→",
+    "rule": "─", "tl": "╭", "tr": "╮", "bl": "╰", "br": "╯", "side": "│", "ellipsis": "…",
+}
+ASCII_GLYPHS = {
+    "ok": "+", "warn": "!", "danger": "x", "action": ">", "dot": "-", "arrow": "->",
+    "rule": "-", "tl": "+", "tr": "+", "bl": "+", "br": "+", "side": "|", "ellipsis": "...",
+}
+MAX_CARD_WIDTH = 78
+_windows_vt_state = None
+
+
+def _enable_windows_vt():
+    global _windows_vt_state
+    if _windows_vt_state is None:
+        _windows_vt_state = False
+        try:
+            import ctypes
+
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.GetStdHandle(-11)
+            mode = ctypes.c_uint32()
+            if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+                # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+                _windows_vt_state = bool(kernel32.SetConsoleMode(handle, mode.value | 0x0004))
+        except Exception:
+            _windows_vt_state = False
+    return _windows_vt_state
+
+
+def stream_is_tty(stream=None):
+    stream = stream if stream is not None else sys.stdout
+    try:
+        return bool(stream.isatty())
+    except Exception:
+        return False
+
+
+def stream_supports_color(stream=None):
+    if os.environ.get("NO_COLOR") or os.environ.get("TERM") == "dumb":
+        return False
+    if not stream_is_tty(stream):
+        return False
+    if CURRENT_OS == OS_WINDOWS:
+        return _enable_windows_vt()
+    return True
+
+
+def glyphs(stream=None):
+    stream = stream if stream is not None else sys.stdout
+    encoding = getattr(stream, "encoding", None)
+    if not encoding:
+        return UNICODE_GLYPHS
+    try:
+        "".join(UNICODE_GLYPHS.values()).encode(encoding)
+    except (LookupError, UnicodeEncodeError):
+        return ASCII_GLYPHS
+    return UNICODE_GLYPHS
+
+
+def paint(text, tone, stream=None):
+    codes = TONE_CODES.get(tone, ())
+    if not codes or not stream_supports_color(stream if stream is not None else sys.stdout):
+        return text
+    return f"\x1b[{';'.join(codes)}m{text}\x1b[0m"
+
+
+def display_width(text):
+    width = 0
+    for char in text:
+        if unicodedata.combining(char):
+            continue
+        width += 2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
+    return width
+
+
+def shorten_middle(text, width, ellipsis="…"):
+    if display_width(text) <= width:
+        return text
+    keep = max(1, width - display_width(ellipsis))
+    head = text[: keep // 2]
+    tail = text[len(text) - (keep - len(head)):]
+    while display_width(head + ellipsis + tail) > width and (head or tail):
+        if len(head) >= len(tail) and head:
+            head = head[:-1]
+        else:
+            tail = tail[1:]
+    return head + ellipsis + tail
+
+
+def terminal_columns():
+    return shutil.get_terminal_size((80, 24)).columns
+
+
+def plural(count, singular, plural_form=None):
+    word = singular if count == 1 else (plural_form or singular + "s")
+    return f"{count:,} {word}"
+
+
+def print_phase_header(title, step=None, total_steps=None, stream=None):
+    stream = stream if stream is not None else sys.stdout
+    g = glyphs(stream)
+    label = f" {step}/{total_steps}  {title} " if step and total_steps and total_steps > 1 else f" {title} "
+    width = min(terminal_columns() - 1, MAX_CARD_WIDTH)
+    tail = g["rule"] * max(3, width - display_width(label) - 2)
+    print(file=stream)
+    print(paint(g["rule"] * 2 + label + tail, "strong", stream), file=stream)
+
+
+def print_status(tone, text, detail=None, stream=None, indent="  "):
+    """One result line: colored glyph + bold text, optional dim detail after."""
+    stream = stream if stream is not None else sys.stdout
+    g = glyphs(stream)
+    mark = g[{"ok": "ok", "danger": "danger", "warn": "warn", "action": "action"}.get(tone, "dot")]
+    line = indent + paint(f"{mark} {text}", tone, stream)
+    if detail:
+        line += "   " + paint(detail, "dim", stream)
+    print(line, file=stream, flush=True)
+
+
+def print_card(title, rows, tone="plain", stream=None):
+    """Draw a box. Rows are (label, value, tone) or None for a blank line.
+
+    Values word-wrap to fit the terminal, which may split long tokens, so
+    never put anything here the user must copy verbatim; print that unboxed.
+    """
+    stream = stream if stream is not None else sys.stdout
+    g = glyphs(stream)
+    label_width = max((display_width(row[0]) for row in rows if row), default=0)
+    gap = 2 if label_width else 0
+
+    natural = max(
+        [display_width(title) + 4]
+        + [label_width + gap + display_width(row[1]) for row in rows if row]
+    )
+    inner = max(min(natural, min(terminal_columns() - 1, MAX_CARD_WIDTH) - 4), 20)
+    border = lambda text: paint(text, tone, stream)
+    title_text = f" {shorten_middle(title, inner - 1, g['ellipsis'])} "
+    top_fill = g["rule"] * max(0, inner + 1 - display_width(title_text))
+    print(border(g["tl"] + g["rule"]) + paint(title_text, tone, stream) + border(top_fill + g["tr"]), file=stream)
+    lines = []
+    for row in rows:
+        if not row:
+            lines.append(("", ""))
+            continue
+        label, value, row_tone = row
+        value_room = max(8, inner - label_width - gap)
+        for index, chunk in enumerate(textwrap.wrap(value, value_room, break_on_hyphens=False) or [""]):
+            head = (label if index == 0 else "").ljust(label_width + gap) if label_width else ""
+            lines.append((head + chunk, paint(head, "dim", stream) + paint(chunk, row_tone, stream)))
+    for body, painted in lines:
+        pad = " " * max(0, inner - display_width(body))
+        print(border(g["side"]) + " " + painted + pad + " " + border(g["side"]), file=stream)
+    print(border(g["bl"] + g["rule"] * (inner + 2) + g["br"]), file=stream, flush=True)
+
+
+def print_alert(title, lines, tone="danger", stream=None):
+    """Loud unboxed block for warnings the user must read; text is never truncated."""
+    stream = stream if stream is not None else sys.stderr
+    g = glyphs(stream)
+    bar = paint(g["side"], tone, stream)
+    mark = g["danger"] if tone == "danger" else g["warn"]
+    print(file=stream)
+    print(bar + " " + paint(f"{mark} {title}", tone, stream), file=stream)
+    for line in lines:
+        print(bar + " " + line, file=stream)
+    print(file=stream, flush=True)
+
+
+def print_item(tone, verb, rest, stream=None):
+    """Per-path result line. The full path is always printed, never shortened."""
+    stream = stream if stream is not None else sys.stdout
+    g = glyphs(stream)
+    mark = g[{"ok": "ok", "danger": "danger", "warn": "warn"}.get(tone, "dot")]
+    print("    " + paint(f"{mark} {verb}", tone, stream) + rest, file=stream, flush=True)
 
 
 def is_mpeg2_ts(path):
@@ -857,6 +1015,14 @@ def is_junk_file(name, options):
 
 
 _last_progress_print = 0.0
+_progress_line_open = False
+
+
+def _write_progress(text):
+    global _progress_line_open
+    _progress_line_open = True
+    clear = "\x1b[K" if stream_is_tty(sys.stdout) else ""
+    print(f"\r  {text}{clear}", end="", flush=True)
 
 
 def print_progress(label, done, total=None, stats=None, force=False):
@@ -869,29 +1035,45 @@ def print_progress(label, done, total=None, stats=None, force=False):
     _last_progress_print = now
     if total:
         percent = (done / total) * 100 if total else 100
-        print(f"\r[{label}] {done}/{total} ({percent:.1f}%)", end="", flush=True)
+        _write_progress(f"[{label}] {done:,}/{total:,} ({percent:.1f}%)")
     elif stats:
-        print(
-            f"\r[{label}] files={stats.scanned} dirs={stats.dirs_scanned} "
-            f"ignored={stats.ignored} unreadable={stats.unreadable}",
-            end="",
-            flush=True,
+        sep = f" {glyphs()['dot']} "
+        _write_progress(
+            f"[{label}] {stats.scanned:,} files{sep}{stats.dirs_scanned:,} folders{sep}"
+            f"{stats.ignored:,} ignored{sep}{stats.unreadable:,} unreadable"
         )
     else:
-        print(f"\r[{label}] {done}", end="", flush=True)
+        _write_progress(f"[{label}] {done:,}")
 
 
 def print_byte_progress(label, done, total):
     percent = (done / total) * 100 if total else 100.0
-    print(
-        f"\r[{label}] {format_size(done)}/{format_size(total)} ({percent:.1f}%)",
-        end="",
-        flush=True,
-    )
+    _write_progress(f"[{label}] {format_size(done)}/{format_size(total)} ({percent:.1f}%)")
 
 
-def finish_progress():
-    print()
+def finish_progress(done_line=None):
+    """End the open \\r progress line.
+
+    With ``done_line`` the progress line is replaced by that summary on a TTY
+    (kept above it when piped, so logs still show the final count).
+    """
+    global _progress_line_open
+    was_open = _progress_line_open
+    _progress_line_open = False
+    if done_line is None:
+        print()
+        return
+    if was_open and stream_is_tty(sys.stdout):
+        print("\r\x1b[K", end="")
+    elif was_open:
+        print()
+    print(done_line, flush=True)
+
+
+def stage_done_line(name, text, stream=None):
+    stream = stream if stream is not None else sys.stdout
+    g = glyphs(stream)
+    return "  " + paint(g["ok"], "ok", stream) + " " + paint(name.ljust(9), "strong", stream) + text
 
 
 _SF_DATALESS = 0x40000000  # BSD stat flag set on macOS 10.15+ iCloud Drive evicted files
@@ -984,43 +1166,33 @@ def scan_by_size(options, stats):
 
     if entries_seen:
         print_progress("scan", entries_seen, stats=stats, force=True)
-        finish_progress()
+    ignored_note = f"   ({stats.ignored:,} ignored)" if stats.ignored else ""
+    finish_progress(
+        stage_done_line(
+            "Scanned",
+            f"{plural(stats.scanned, 'file')} in {plural(stats.dirs_scanned, 'folder')}"
+            + paint(ignored_note, "dim"),
+        )
+    )
     return sizes
 
 
-def find_duplicates(options):
+def find_duplicates(options, phase_total=1):
     stats = ScanStats()
     full_verification = options.verify_mode == VERIFY_FULL
-    stage_count = 3 if full_verification else 2
-    print(f"Starting duplicate file scan in '{options.path}'")
-    print("-" * 60)
     sparse_label = (
         f"{FAST_HASH_NAME}-scaled-sparse-{MIN_FAST_SAMPLE_COUNT}-"
         f"{MAX_FAST_SAMPLE_COUNT}x{format_size(FAST_SAMPLE_BYTES)}"
     )
-    if full_verification:
-        print(
-            f"Hash function: {FULL_HASH_NAME} for <= {format_size(SMALL_FILE_FULL_HASH_BYTES)}, "
-            f"{sparse_label} prefilter for larger files, then {FULL_HASH_NAME} full verification"
-        )
-    else:
-        print(
-            f"Hash function: {FULL_HASH_NAME} for <= {format_size(SMALL_FILE_FULL_HASH_BYTES)}, "
-            f"{sparse_label} sampled verification for larger files (fast, probabilistic)"
-        )
-    print(f"Ignoring directories named: {', '.join(sorted(options.ignore_dirs))}")
-    print(f"Ignoring files named: {', '.join(sorted(options.ignore_files))}")
-    print("-" * 60)
-
-    print(f"\n[Stage 1/{stage_count}] Scanning files and grouping by size...")
+    print_scan_header(options, sparse_label)
+    print_phase_header("Duplicate files", 1, phase_total)
     potential_by_size = scan_by_size(options, stats)
     size_candidates = [info for files in potential_by_size.values() for info in files]
     stats.size_candidates = len(size_candidates)
     if not size_candidates:
-        print("\nNo files with duplicate sizes found.")
+        print_no_duplicates(stats)
         return [], stats
 
-    print(f"\n[Stage 2/{stage_count}] Sparse multi-chunk hashing {len(size_candidates)} files...")
     fingerprint_groups = defaultdict(list)
     total = len(size_candidates)
     for done, info in enumerate(size_candidates, 1):
@@ -1036,7 +1208,6 @@ def find_duplicates(options):
             if len(stats.unreadable_paths) < 50:
                 stats.unreadable_paths.append(info.path)
         print_progress("sparse hash", done, total, force=done == total or done % options.progress_every == 0)
-    finish_progress()
 
     sparse_candidates = [
         info
@@ -1044,8 +1215,15 @@ def find_duplicates(options):
         if len(files) > 1
         for info in files
     ]
+    finish_progress(
+        stage_done_line(
+            "Compared",
+            f"{plural(total, 'same-size file')} by content hash "
+            f"{glyphs()['arrow']} {plural(len(sparse_candidates), 'match', 'matches')}",
+        )
+    )
     if not sparse_candidates:
-        print("\nNo potential duplicates found after sparse multi-chunk hashing.")
+        print_no_duplicates(stats)
         return [], stats
 
     if not full_verification:
@@ -1059,11 +1237,9 @@ def find_duplicates(options):
             if len(files) > 1
         ]
         duplicates.sort(key=lambda group: group.files[0].path)
-        stats.duplicate_groups = len(duplicates)
-        stats.duplicate_files = sum(len(group.files) for group in duplicates)
+        record_duplicates(stats, duplicates)
         return duplicates, stats
 
-    print(f"\n[Stage 3/{stage_count}] Full content hashing {len(sparse_candidates)} files...")
     full_hash_groups = defaultdict(list)
     total = len(sparse_candidates)
     for done, info in enumerate(sparse_candidates, 1):
@@ -1075,7 +1251,7 @@ def find_duplicates(options):
             if len(stats.unreadable_paths) < 50:
                 stats.unreadable_paths.append(info.path)
         print_progress("full hash", done, total, force=done == total or done % options.progress_every == 0)
-    finish_progress()
+    finish_progress(stage_done_line("Verified", f"{plural(total, 'file')} byte-for-byte"))
 
     duplicates = [
         DuplicateGroup(full_hash, tuple(sorted(files, key=lambda item: item.path)), FULL_HASH_NAME)
@@ -1083,11 +1259,83 @@ def find_duplicates(options):
         if len(files) > 1
     ]
     duplicates.sort(key=lambda group: group.files[0].path)
+    record_duplicates(stats, duplicates)
+    return duplicates, stats
+
+
+def record_duplicates(stats, duplicates):
     stats.duplicate_groups = len(duplicates)
     stats.duplicate_files = sum(len(group.files) for group in duplicates)
+    stats.reclaimable_bytes = sum(group.files[0].size * (len(group.files) - 1) for group in duplicates)
     if not duplicates:
-        print("\nNo duplicates found after full content verification.")
-    return duplicates, stats
+        print_no_duplicates(stats)
+        return
+    print()
+    print_status(
+        "action",
+        f"Found {plural(stats.duplicate_files, 'duplicate file')} in {plural(stats.duplicate_groups, 'group')}",
+        f"{format_size(stats.reclaimable_bytes)} reclaimable",
+    )
+    print_scan_notes(stats)
+
+
+def scan_funnel(stats):
+    arrow = glyphs()["arrow"]
+    return (
+        f"{stats.scanned:,} scanned {arrow} {stats.size_candidates:,} same size "
+        f"{arrow} {stats.duplicate_files:,} identical"
+    )
+
+
+def print_no_duplicates(stats):
+    print()
+    print_status("ok", "No duplicate files", scan_funnel(stats))
+    print_scan_notes(stats)
+
+
+def print_scan_notes(stats):
+    """Anything the scan could not look at, listed in full right where it happened."""
+    if stats.unreadable:
+        print_status("warn", f"{plural(stats.unreadable, 'file')} could not be read", "check file permissions")
+        for path in stats.unreadable_paths[:10]:
+            print(f"      {path}")
+        if stats.unreadable > len(stats.unreadable_paths[:10]):
+            print(f"      ... and {stats.unreadable - len(stats.unreadable_paths[:10])} more")
+    if stats.cloud_skipped:
+        print_status(
+            "warn",
+            f"{plural(stats.cloud_skipped, 'cloud-only file')} skipped",
+            "iCloud files not downloaded locally",
+        )
+        for path in stats.cloud_skipped_paths[:10]:
+            print(f"      {path}")
+        if stats.cloud_skipped > len(stats.cloud_skipped_paths[:10]):
+            print(f"      ... and {stats.cloud_skipped - len(stats.cloud_skipped_paths[:10])} more")
+
+
+def print_scan_header(options, sparse_label):
+    g = glyphs()
+    print()
+    print(paint("dedup", "strong") + "  " + paint(options.path, "strong"))
+    size_cut = format_size(SMALL_FILE_FULL_HASH_BYTES)
+    if options.verify_mode == VERIFY_FULL:
+        mode = "full verify " + g["dot"] + " every match is read in full"
+        detail = f"{FULL_HASH_NAME}; {sparse_label} prefilter"
+    else:
+        mode = f"fast {g['dot']} files over {size_cut} are sampled, then fully checked before any trash"
+        detail = f"{FULL_HASH_NAME} {g['arrow']} {sparse_label}"
+    print("  " + paint("mode    ", "dim") + mode)
+    print("  " + paint("hash    ", "dim") + paint(detail, "dim"))
+    extra_dirs = sorted(set(options.ignore_dirs) - set(DEFAULT_IGNORE_DIRS))
+    extra_files = sorted(set(options.ignore_files) - set(DEFAULT_IGNORE_FILES))
+    skip = (
+        f"{len(DEFAULT_IGNORE_DIRS)} standard folder names (.git, node_modules, {g['ellipsis']}), "
+        f"{len(DEFAULT_IGNORE_FILES)} system files (.DS_Store, {g['ellipsis']})"
+        + ("" if options.include_hidden else ", hidden entries")
+    )
+    print("  " + paint("skip    ", "dim") + skip)
+    if extra_dirs or extra_files:
+        print("  " + paint("+ yours ", "dim") + ", ".join(extra_dirs + extra_files))
 
 
 def find_empty_dirs(options):
@@ -3479,7 +3727,8 @@ def _bind_server(handler, port):
     except OSError as e:
         if e.errno != errno.EADDRINUSE:
             raise
-        print(f"\nNOTICE: Port {port} is busy — using a random port. Check the URL printed below.\n", flush=True)
+        print()
+        print_status("warn", f"Port {port} is busy", "using a random port; use the link printed below")
         return ThreadingHTTPServer(("127.0.0.1", 0), handler)
 
 
@@ -3490,10 +3739,13 @@ def _run_browser_session(state, handler_factory, url_label, cleanup=None, port=7
     url = f"http://127.0.0.1:{server.server_port}/{query}"
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
-    print(f"\n{url_label}")
-    print(f"  → {url}")
-    print("  (If the browser did not open automatically, copy the URL above.)")
-    print("Press Ctrl+C to cancel.", flush=True)
+    g = glyphs()
+    print()
+    print("  " + paint(f"{g['action']} YOUR TURN  {url_label}", "warn"))
+    # The URL carries the session token: print it whole, never inside a box.
+    print("    " + paint(url, "strong"))
+    print("    " + paint("Opens automatically. If nothing opened, copy the link above.", "dim"))
+    print("    " + paint("Waiting for you to finish there. Ctrl+C cancels.", "dim"), flush=True)
     terminal_app = frontmost_app()
     try:
         webbrowser.open(url)
@@ -3537,7 +3789,7 @@ def select_files_in_browser(
             state.thumbnail_cache.clear()
             state.thumbnail_inflight.clear()
         get_video_duration.cache_clear()
-    return _run_browser_session(state, make_browser_handler, "Browser review UI", cleanup=cleanup, port=port)
+    return _run_browser_session(state, make_browser_handler, "Review the duplicates in your browser", cleanup=cleanup, port=port)
 
 
 def smoke_test_browser_server():
@@ -3880,7 +4132,7 @@ def make_empty_dir_handler(state):
 
 def select_empty_dirs_in_browser(dirs, port=7979):
     state = EmptyDirSelectionState(dirs)
-    return _run_browser_session(state, make_empty_dir_handler, "Empty folder review UI", port=port)
+    return _run_browser_session(state, make_empty_dir_handler, "Review the empty folders in your browser", port=port)
 
 
 def build_expected_hashes(groups):
@@ -4359,24 +4611,24 @@ def prompt_permanent_delete(
     """
     count = len(files_on_volume)
     print()
-    print(f"Volume {volume_root!r} has no recycle bin.")
-    print(f"{count} {item_label}(s) on this volume cannot be moved to a system trash:")
+    print_status("warn", f"DECISION NEEDED {glyphs()['dot']} volume {volume_root!r} has no recycle bin")
+    print(f"    {count} {item_label}(s) on this volume cannot be moved to a system trash:")
     preview = files_on_volume[:5]
     for path in preview:
-        print(f"  - {path}")
+        print(f"      - {path}")
     if count > len(preview):
-        print(f"  ... and {count - len(preview)} more")
+        print(f"      ... and {count - len(preview)} more")
     print()
     if allow_slow_local_trash and CURRENT_OS != OS_WINDOWS:
-        print("Choose how to handle these items:")
-        print("  [p] Permanently delete them. This is irreversible (like Finder's 'Delete Immediately').")
-        print("  [l] Move them to a local trash fallback directory. This may be slow across the network.")
-        print(f"  [s] Skip these {item_label}s.")
+        print("    Choose how to handle these items:")
+        print("    " + paint("[p] Permanently delete them. This is irreversible", "danger") + " (like Finder's 'Delete Immediately').")
+        print("    [l] Move them to a local trash fallback directory. This may be slow across the network.")
+        print(f"    [s] Skip these {item_label}s.")
         prompt = "Permanently delete, use local trash, or skip? [p/l/S]: "
     else:
-        print("Permanently delete them? This is irreversible (like Finder's 'Delete Immediately').")
+        print("    " + paint("Permanently delete them? This is irreversible", "danger") + " (like Finder's 'Delete Immediately').")
         if CURRENT_OS != OS_WINDOWS:
-            print(f"Decline to skip these {item_label}s — pass --allow-slow-local-trash to use the local trash fallback instead.")
+            print(f"    Decline to skip these {item_label}s — pass --allow-slow-local-trash to use the local trash fallback instead.")
         prompt = "Permanently delete? [y/N]: "
     try:
         answer = input_func(prompt).strip().lower()
@@ -4499,8 +4751,9 @@ def trash_files(
         if needed_hashes:
             suffix = f" — {format_size(remaining_bytes)} left to read" if remaining_bytes else ""
             print(
-                f"Completing exact verification for {len(needed_hashes)} file(s) "
-                f"from the reviewed selection...{suffix}",
+                "  "
+                + paint(f"Checking {plural(len(needed_hashes), 'file')} byte-for-byte before trashing", "strong")
+                + paint(suffix, "dim"),
                 flush=True,
             )
     send_to_trash = None
@@ -4515,7 +4768,7 @@ def trash_files(
     validated_paths = []
     for path in sorted(files):
         if path not in expected:
-            print(f"Skipped (not in duplicate set): {path}", file=sys.stderr)
+            print_item("warn", "Skipped", f" (not in duplicate set): {path}", sys.stderr)
             result.skipped += 1
             continue
         info, group = expected[path]
@@ -4528,7 +4781,7 @@ def trash_files(
             full_hash_preloader.get if full_hash_preloader is not None else None,
         )
         if not valid:
-            print(f"Skipped ({reason}): {path}", file=sys.stderr)
+            print_item("warn", "Skipped", f" ({reason}): {path}", sys.stderr)
             result.skipped += 1
             continue
         validated_paths.append(path)
@@ -4538,7 +4791,8 @@ def trash_files(
 
     if dry_run:
         for path in validated_paths:
-            print(f"Would move to trash: {path}")
+            print_item("dim", "Would move to trash:", f" {path}")
+            result.bytes_freed += expected[path][0].size
         return result
 
     # Per-volume cached decision for "no trash on volume" situations.
@@ -4578,7 +4832,7 @@ def trash_files(
                             full_hash_preloader.get if full_hash_preloader is not None else None,
                         )
                         if not valid:
-                            print(f"Skipped before permanent delete ({reason}): {path}", file=sys.stderr)
+                            print_item("warn", "Skipped", f" before permanent delete ({reason}): {path}", sys.stderr)
                             result.skipped += 1
                             continue
                         _ensure_no_symlink_replacement(path)
@@ -4589,37 +4843,34 @@ def trash_files(
                         move_to_local_trash(path)
                         trash_method = "local-trash"
                     else:
-                        print(
-                            f"Skipped ({no_trash}; volume has no trash and strategy is 'skip'): {path}",
-                            file=sys.stderr,
+                        print_item(
+                            "warn",
+                            "Skipped",
+                            f" ({no_trash}; volume has no trash and strategy is 'skip'): {path}",
+                            sys.stderr,
                         )
                         result.skipped += 1
                         continue
                 except Exception as fallback_error:
-                    print(
-                        f"Error trashing {path}: {no_trash}; fallback ({strategy}) failed: {fallback_error}",
-                        file=sys.stderr,
+                    print_item(
+                        "danger",
+                        "Error",
+                        f" trashing {path}: {no_trash}; fallback ({strategy}) failed: {fallback_error}",
+                        sys.stderr,
                     )
                     result.errors += 1
                     continue
             except Exception as exc:
-                print(f"Error trashing {path}: {exc}", file=sys.stderr)
+                print_item("danger", "Error", f" trashing {path}: {exc}", sys.stderr)
                 result.errors += 1
                 continue
 
-            if trash_method == "trash-cmd":
-                print(f"Moved to trash via /usr/bin/trash: {path}")
-            elif trash_method == "nas-recycle":
-                print(f"Moved to NAS recycle folder (no network copy): {path}")
-            elif trash_method == "permanent-delete":
-                print(f"Permanently deleted (volume has no recycle bin): {path}")
+            print_trash_outcome(trash_method, path)
+            if trash_method == "permanent-delete":
                 result.permanently_deleted += 1
-                continue
-            elif trash_method == "local-trash":
-                print(f"Copied to local ~/.Trash (slow network fallback): {path}")
             else:
-                print(f"Moved to trash: {path}")
-            result.trashed += 1
+                result.trashed += 1
+            result.bytes_freed += expected[path][0].size
     except KeyboardInterrupt:
         done = (
             result.trashed
@@ -4630,6 +4881,19 @@ def trash_files(
         print_interrupt_summary(result, len(validated_paths) - done, "file")
         raise
     return result
+
+
+def print_trash_outcome(trash_method, path):
+    if trash_method == "trash-cmd":
+        print_item("ok", "Moved to trash", f" via /usr/bin/trash: {path}")
+    elif trash_method == "nas-recycle":
+        print_item("ok", "Moved to NAS recycle folder", f" (no network copy): {path}")
+    elif trash_method == "permanent-delete":
+        print_item("danger", "Permanently deleted", f" (volume has no recycle bin): {path}")
+    elif trash_method == "local-trash":
+        print_item("ok", "Copied to local ~/.Trash", f" (slow network fallback): {path}")
+    else:
+        print_item("ok", "Moved to trash:", f" {path}")
 
 
 def print_interrupt_summary(result, remaining, item_label):
@@ -4704,14 +4968,14 @@ def trash_empty_dirs(
 
     if dry_run:
         for path in dirs:
-            print(f"Would move to trash: {path}")
+            print_item("dim", "Would move to trash:", f" {path}")
         return result
 
     no_trash_strategy = {}
     try:
         for path in dirs:
             if not is_effectively_empty_dir(path, options):
-                print(f"Skipped (directory is no longer empty): {path}", file=sys.stderr)
+                print_item("warn", "Skipped", f" (directory is no longer empty): {path}", sys.stderr)
                 result.skipped += 1
                 continue
             try:
@@ -4731,9 +4995,8 @@ def trash_empty_dirs(
                 try:
                     if strategy == "permanent":
                         if not is_effectively_empty_dir(path, options):
-                            print(
-                                f"Skipped (directory no longer empty before delete): {path}",
-                                file=sys.stderr,
+                            print_item(
+                                "warn", "Skipped", f" (directory no longer empty before delete): {path}", sys.stderr
                             )
                             result.skipped += 1
                             continue
@@ -4745,41 +5008,37 @@ def trash_empty_dirs(
                         move_to_local_trash(path)
                         trash_method = "local-trash"
                     else:
-                        print(
-                            f"Skipped ({no_trash}; volume has no trash and strategy is 'skip'): {path}",
-                            file=sys.stderr,
+                        print_item(
+                            "warn",
+                            "Skipped",
+                            f" ({no_trash}; volume has no trash and strategy is 'skip'): {path}",
+                            sys.stderr,
                         )
                         result.skipped += 1
                         continue
                 except Exception as fallback_error:
-                    print(
-                        f"Error trashing {path}: {no_trash}; fallback ({strategy}) failed: {fallback_error}",
-                        file=sys.stderr,
+                    print_item(
+                        "danger",
+                        "Error",
+                        f" trashing {path}: {no_trash}; fallback ({strategy}) failed: {fallback_error}",
+                        sys.stderr,
                     )
                     result.errors += 1
                     continue
             except FileNotFoundError:
-                print(f"Skipped (no longer exists): {path}", file=sys.stderr)
+                print_item("warn", "Skipped", f" (no longer exists): {path}", sys.stderr)
                 result.skipped += 1
                 continue
             except Exception as exc:
-                print(f"Error trashing {path}: {exc}", file=sys.stderr)
+                print_item("danger", "Error", f" trashing {path}: {exc}", sys.stderr)
                 result.errors += 1
                 continue
 
-            if trash_method == "trash-cmd":
-                print(f"Moved to trash via /usr/bin/trash: {path}")
-            elif trash_method == "nas-recycle":
-                print(f"Moved to NAS recycle folder (no network copy): {path}")
-            elif trash_method == "permanent-delete":
-                print(f"Permanently deleted (volume has no recycle bin): {path}")
+            print_trash_outcome(trash_method, path)
+            if trash_method == "permanent-delete":
                 result.permanently_deleted += 1
-                continue
-            elif trash_method == "local-trash":
-                print(f"Copied to local ~/.Trash (slow network fallback): {path}")
             else:
-                print(f"Moved to trash: {path}")
-            result.trashed += 1
+                result.trashed += 1
     except KeyboardInterrupt:
         done = result.trashed + result.errors + result.skipped + result.permanently_deleted
         print_interrupt_summary(result, len(dirs) - done, "folder")
@@ -4800,7 +5059,7 @@ def _decide_no_trash_strategy(
     Returns one of ``"permanent"``, ``"local"``, or ``"skip"``.
     """
     if permanent_on_no_trash:
-        print(f"Volume {volume_root!r} has no recycle bin; --permanent-on-no-trash is set.")
+        print_status("danger", f"Volume {volume_root!r} has no recycle bin", "--permanent-on-no-trash is set: deleting permanently")
         return "permanent"
     if interactive:
         files_on_volume = [p for p in all_paths if get_volume_root(p) == volume_root]
@@ -4939,14 +5198,13 @@ def find_and_process_duplicates(argv=None):
     # H3: warn loudly when permanent-on-no-trash is active so users understand
     # they opted into irreversible deletion on volumes without a recycle bin.
     if args.permanent_on_no_trash:
-        print("\n" + "!" * 60, file=sys.stderr)
-        print(
-            "WARNING: --permanent-on-no-trash is active.\n"
-            "Files on volumes without a recycle bin will be PERMANENTLY\n"
-            "deleted and cannot be recovered. Press Ctrl+C now to abort.",
-            file=sys.stderr,
+        print_alert(
+            "WARNING: --permanent-on-no-trash is active.",
+            [
+                "Files on volumes without a recycle bin will be PERMANENTLY",
+                "deleted and cannot be recovered. Press Ctrl+C now to abort.",
+            ],
         )
-        print("!" * 60 + "\n", file=sys.stderr)
         if sys.stdin.isatty():
             try:
                 input("Press Enter to continue, or Ctrl+C to abort: ")
@@ -4958,22 +5216,21 @@ def find_and_process_duplicates(argv=None):
     # H2: require an explicit typed confirmation when scanning inside a Photos
     # Library — moving files here can silently corrupt the SQLite database.
     if args.allow_photo_library and is_photo_library_path(options.path):
-        print("\n" + "!" * 60, file=sys.stderr)
-        print(
-            "WARNING: Scanning inside a macOS Photos Library.\n"
-            "Moving files here can CORRUPT your library and permanently\n"
-            "destroy photos. Ensure Photos.app is closed and you have a\n"
-            "verified, complete backup before continuing.",
-            file=sys.stderr,
+        print_alert(
+            "WARNING: Scanning inside a macOS Photos Library.",
+            [
+                "Moving files here can CORRUPT your library and permanently",
+                "destroy photos. Ensure Photos.app is closed and you have a",
+                "verified, complete backup before continuing.",
+            ],
         )
-        print("!" * 60, file=sys.stderr)
         if sys.stdin.isatty():
             try:
-                answer = input("\nType exactly 'I have a backup' to proceed: ").strip()
+                answer = input("Type exactly 'I have a backup' to proceed: ").strip()
             except EOFError:
                 answer = ""
             if answer != "I have a backup":
-                print("Aborted.", file=sys.stderr)
+                print_status("danger", "Aborted", "nothing was scanned or changed", stream=sys.stderr)
                 return 2
         else:
             print(
@@ -4983,20 +5240,52 @@ def find_and_process_duplicates(argv=None):
             )
             return 2
 
-    duplicate_groups, stats = find_duplicates(options)
-    if not duplicate_groups:
-        stats.print_summary()
-        if args.clean_empty_dirs:
-            return _run_empty_dir_phase(args, options)
-        return 0
+    report = RunReport(dry_run=args.dry_run, empty_dirs_enabled=args.clean_empty_dirs)
+    duplicate_groups, report.stats = find_duplicates(options, phase_total=2 if args.clean_empty_dirs else 1)
+    exit_code = 0
+    if duplicate_groups:
+        exit_code = _run_duplicate_review(args, duplicate_groups, report)
+    if args.clean_empty_dirs:
+        exit_code = max(exit_code, _run_empty_dir_phase(args, options, report))
+    print_final_summary(report)
+    return exit_code
 
+
+@dataclass
+class RunReport:
+    """What happened in each phase, gathered for the closing summary card."""
+
+    dry_run: bool = False
+    stats: ScanStats = None
+    duplicate_result: TrashResult = None
+    empty_dirs_enabled: bool = True
+    empty_dirs_found: int = 0
+    empty_dirs_result: TrashResult = None
+
+
+def print_trash_heading(count, noun, dry_run):
+    print()
+    if dry_run:
+        print_status(
+            "warn", f"DRY RUN {glyphs()['dot']} {plural(count, noun)} would be moved to the Trash", "nothing is touched"
+        )
+    else:
+        print_status("action", f"Moving {plural(count, noun)} to the Trash")
+
+
+def print_nothing_selected(noun):
+    print()
+    print_status("plain", f"No {noun}s selected", "nothing was changed")
+
+
+def _run_duplicate_review(args, duplicate_groups, report):
+    stats = report.stats
     # H15: flag when the result set is large enough to slow the browser UI.
     if stats.duplicate_groups > 1000:
-        print(
-            f"\nNOTICE: {stats.duplicate_groups} duplicate groups found. "
-            "The browser UI may be slow for very large result sets.\n"
-            "Consider narrowing the scan path or adding --ignore-dir.",
-            flush=True,
+        print_status(
+            "warn",
+            f"{stats.duplicate_groups:,} duplicate groups may make the browser UI slow",
+            "narrow the scan path or add --ignore-dir",
         )
 
     dry_run = args.dry_run
@@ -5009,20 +5298,12 @@ def find_and_process_duplicates(argv=None):
             port=args.port,
             full_hash_preloader=full_hash_preloader,
         )
-        print("-" * 60)
         if not files_to_trash:
             full_hash_preloader.stop()
-            print("\nScan complete. No files were selected for removal.")
-            stats.print_summary()
-            if args.clean_empty_dirs:
-                return _run_empty_dir_phase(args, options)
+            print_nothing_selected("file")
             return 0
 
-        action = "would be moved to the Trash/Recycle Bin" if dry_run else "will be moved to the Trash/Recycle Bin"
-        print(f"\nYou selected {len(files_to_trash)} file(s) that {action}:")
-        for path in sorted(files_to_trash):
-            print(f"  - {path}")
-
+        print_trash_heading(len(files_to_trash), "file", dry_run)
         result = trash_files(
             files_to_trash,
             duplicate_groups,
@@ -5034,82 +5315,156 @@ def find_and_process_duplicates(argv=None):
         )
     finally:
         full_hash_preloader.stop()
-    stats.print_summary(result)
-    exit_code = 0 if result.errors == 0 else 1
+    report.duplicate_result = result
 
     # H4: make errors and unexpected skips stand out so they aren't missed.
     if result.errors:
-        print(
-            f"\nWARNING: {result.errors} file(s) could not be trashed (see above).\n"
-            "Check whether your drive is still connected.",
-            file=sys.stderr,
+        print_status(
+            "danger",
+            f"{plural(result.errors, 'file')} could not be trashed (see above)",
+            "check whether your drive is still connected",
+            stream=sys.stderr,
         )
     if not dry_run and result.skipped:
-        print(
-            f"NOTE: {result.skipped} file(s) were skipped for safety "
-            "(see the reasons above).",
-            file=sys.stderr,
+        print_status(
+            "warn",
+            f"{plural(result.skipped, 'file')} skipped for safety (see the reasons above)",
+            stream=sys.stderr,
         )
-
-    if args.clean_empty_dirs:
-        exit_code = max(exit_code, _run_empty_dir_phase(args, options))
-
-    return exit_code
+    return 0 if result.errors == 0 else 1
 
 
-def _run_empty_dir_phase(args, options):
-    print("\n" + "=" * 60)
-    print("Empty folder scan")
-    print("=" * 60)
+def _run_empty_dir_phase(args, options, report):
+    print_phase_header("Empty folders", 2, 2)
     empty_dirs = find_empty_dirs(options)
+    report.empty_dirs_found = len(empty_dirs)
     if not empty_dirs:
-        print("\nNo empty folders found.")
+        print_status("ok", "No empty folders")
         return 0
 
-    print(f"\nFound {len(empty_dirs)} empty folder(s).")
+    print_status("action", f"Found {plural(len(empty_dirs), 'empty folder')}")
     dirs_to_trash = select_empty_dirs_in_browser(empty_dirs, port=args.port)
-    print("-" * 60)
     if not dirs_to_trash:
-        print("\nNo folders were selected for removal.")
+        print_nothing_selected("folder")
         return 0
 
-    dry_run = args.dry_run
-    action = "would be moved to the Trash/Recycle Bin" if dry_run else "will be moved to the Trash/Recycle Bin"
-    print(f"\nYou selected {len(dirs_to_trash)} folder(s) that {action}:")
-    for path in sorted(dirs_to_trash):
-        print(f"  - {path}")
-
+    # Nested selections collapse into their top folder, so count what will move.
+    print_trash_heading(len(_deduplicate_by_ancestry(dirs_to_trash)), "folder", args.dry_run)
     result = trash_empty_dirs(
         dirs_to_trash,
         options,
-        dry_run=dry_run,
+        dry_run=args.dry_run,
         permanent_on_no_trash=args.permanent_on_no_trash,
         allow_slow_local_trash=args.allow_slow_local_trash,
         interactive=not args.yes,
     )
-    print("\nEmpty folder cleanup summary")
-    print("-" * 60)
-    print(f"Selected folders:  {result.selected}")
-    if result.dry_run:
-        print("Mode:              dry-run")
-    else:
-        print(f"Trashed folders:   {result.trashed}")
-        if result.permanently_deleted:
-            print(f"Permanently deleted: {result.permanently_deleted}")
-        print(f"Skipped:           {result.skipped}")
-        print(f"Errors:            {result.errors}")
+    report.empty_dirs_result = result
+    if result.errors:
+        print_status(
+            "danger", f"{plural(result.errors, 'folder')} could not be trashed (see above)", stream=sys.stderr
+        )
     return 0 if result.errors == 0 else 1
+
+
+def _outcome_rows(label, noun, found_text, result, dry_run, show_size):
+    """Rows describing one phase's outcome; the label appears on the first row only."""
+    rows = []
+
+    def add(text, tone):
+        rows.append(("" if rows else label, text, tone))
+
+    if result is None:
+        add(found_text[0], found_text[1])
+        return rows
+    size = lambda: f" ({format_size(result.bytes_freed)})" if show_size and result.bytes_freed else ""
+    if dry_run:
+        add(f"{plural(result.selected - result.skipped, noun)} would be moved to the Trash{size()}", "warn")
+    else:
+        if result.trashed:
+            freed = f", {format_size(result.bytes_freed)} freed" if show_size and result.bytes_freed else ""
+            add(f"{plural(result.trashed, noun)} moved to the Trash{freed}", "ok")
+        if result.permanently_deleted:
+            add(f"{plural(result.permanently_deleted, noun)} PERMANENTLY deleted", "danger")
+        if not result.trashed and not result.permanently_deleted:
+            add(f"no {noun}s were moved", "plain")
+    if result.skipped:
+        add(f"{plural(result.skipped, noun)} skipped for safety (reasons above)", "warn")
+    if result.errors:
+        add(f"{plural(result.errors, noun)} failed (errors above)", "danger")
+    return rows
+
+
+def print_final_summary(report):
+    stats = report.stats
+    g = glyphs()
+    results = [r for r in (report.duplicate_result, report.empty_dirs_result) if r is not None]
+    errors = sum(r.errors for r in results)
+    skipped = sum(r.skipped for r in results)
+    permanent = sum(r.permanently_deleted for r in results)
+    changed = any(r.trashed or r.permanently_deleted for r in results)
+    found_any = stats.duplicate_groups or report.empty_dirs_found
+    scan_gaps = stats.unreadable or stats.cloud_skipped
+
+    if stats.duplicate_groups:
+        dup_found = (f"{plural(stats.duplicate_files, 'file')} in {plural(stats.duplicate_groups, 'group')} found, none selected", "plain")
+    else:
+        dup_found = ("none found", "ok")
+    rows = _outcome_rows("Duplicates", "file", dup_found, report.duplicate_result, report.dry_run, True)
+    rows.append(("", scan_funnel(stats), "dim"))
+    if not report.empty_dirs_enabled:
+        rows.append(("Empty folders", "not checked (--skip-empty-dirs)", "dim"))
+    else:
+        if report.empty_dirs_found:
+            empty_found = (f"{plural(report.empty_dirs_found, 'folder')} found, none selected", "plain")
+        else:
+            empty_found = ("none found", "ok")
+        rows += _outcome_rows("Empty folders", "folder", empty_found, report.empty_dirs_result, report.dry_run, False)
+
+    notes = []
+    if stats.unreadable:
+        notes.append((f"{g['warn']} {plural(stats.unreadable, 'file')} could not be read (listed above)", "warn"))
+    if stats.cloud_skipped:
+        notes.append((f"{g['warn']} {plural(stats.cloud_skipped, 'cloud-only file')} not checked (listed above)", "warn"))
+    if stats.ignored_hidden_count:
+        notes.append((f"{plural(stats.ignored_hidden_count, 'hidden entry', 'hidden entries')} skipped {g['dot']} --include-hidden scans them", "dim"))
+    if stats.ignored_dir_counts:
+        common = ", ".join(name for name, _count in stats.ignored_dir_counts.most_common(4))
+        notes.append((f"{plural(sum(stats.ignored_dir_counts.values()), 'ignored folder')} skipped ({common})", "dim"))
+    if notes:
+        rows.append(None)
+        rows += [("Notes" if index == 0 else "", text, tone) for index, (text, tone) in enumerate(notes)]
+
+    if errors:
+        title, tone = f"{g['danger']} Finished with errors", "danger"
+    elif report.dry_run and results:
+        title, tone = f"{g['warn']} DRY RUN {g['dot']} nothing was moved", "warn"
+    elif skipped or permanent or scan_gaps:
+        title, tone = f"{g['warn']} Done {g['dot']} review the flagged lines", "warn"
+    elif changed:
+        title, tone = f"{g['ok']} Done {g['dot']} cleanup complete", "ok"
+    elif found_any:
+        title, tone = f"{g['ok']} Done {g['dot']} nothing was changed", "ok"
+    else:
+        title, tone = f"{g['ok']} All clear {g['dot']} nothing to clean up", "ok"
+    print()
+    print_card(title, rows, tone)
 
 
 if __name__ == "__main__":
     try:
         sys.exit(find_and_process_duplicates())
     except KeyboardInterrupt:
-        print("\n\nOperation cancelled by user. Exiting.")
+        print()
+        print()
+        print_status("warn", "Cancelled", "stopped by Ctrl+C")
         sys.exit(130)
     except ValueError as exc:
-        print(f"\nSafety error: {exc}", file=sys.stderr)
+        print(file=sys.stderr)
+        print_status("danger", "Safety error", stream=sys.stderr)
+        print(f"    {exc}", file=sys.stderr)
         sys.exit(2)
     except Exception as exc:
-        print(f"\nAn unexpected error occurred: {exc}", file=sys.stderr)
+        print(file=sys.stderr)
+        print_status("danger", "Unexpected error", stream=sys.stderr)
+        print(f"    {exc}", file=sys.stderr)
         sys.exit(1)

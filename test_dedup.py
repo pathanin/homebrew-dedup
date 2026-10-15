@@ -2451,6 +2451,109 @@ class SendToTrashStartupTests(unittest.TestCase):
         self.assertEqual(result, 0)
 
 
+class FakeTty(io.StringIO):
+    def __init__(self, encoding="utf-8"):
+        super().__init__()
+        self._encoding = encoding
+
+    @property
+    def encoding(self):
+        return self._encoding
+
+    def isatty(self):
+        return True
+
+
+class RunFlowOutputTests(unittest.TestCase):
+    def run_main(self, argv, empty_dir_selection=()):
+        out = io.StringIO()
+        err = io.StringIO()
+        with mock.patch(
+            "dedup.select_empty_dirs_in_browser", return_value=list(empty_dir_selection)
+        ) as pick_dirs, mock.patch("dedup.select_files_in_browser", return_value=[]) as pick_files, \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = dedup.find_and_process_duplicates(argv)
+        return code, out.getvalue(), err.getvalue(), pick_dirs, pick_files
+
+    def test_no_duplicates_still_runs_empty_folder_phase_and_summary(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "only.txt"), "w") as fh:
+                fh.write("unique")
+            os.mkdir(os.path.join(d, "hollow"))
+            code, out, _err, pick_dirs, pick_files = self.run_main(["--dry-run", d])
+        self.assertEqual(code, 0)
+        pick_files.assert_not_called()
+        pick_dirs.assert_called_once()
+        self.assertEqual([os.path.basename(p) for p in pick_dirs.call_args[0][0]], ["hollow"])
+        self.assertIn("No duplicate files", out)
+        self.assertIn("Empty folders", out)
+        # The closing card is the last thing printed, after the folder phase.
+        self.assertGreater(out.rindex("Duplicates"), out.index("Found 1 empty folder"))
+        self.assertIn("1 folder found, none selected", out)
+
+    def test_skip_empty_dirs_is_reported_in_summary(self):
+        with tempfile.TemporaryDirectory() as d:
+            code, out, _err, pick_dirs, _pick_files = self.run_main(["--dry-run", "--skip-empty-dirs", d])
+        self.assertEqual(code, 0)
+        pick_dirs.assert_not_called()
+        self.assertIn("not checked (--skip-empty-dirs)", out)
+        self.assertIn("All clear", out)
+
+    def test_dry_run_summary_says_nothing_was_moved(self):
+        with tempfile.TemporaryDirectory() as d:
+            hollow = os.path.join(d, "hollow")
+            os.mkdir(hollow)
+            code, out, _err, _pick_dirs, _pick_files = self.run_main(["--dry-run", d], [hollow])
+            self.assertTrue(os.path.isdir(hollow))
+        self.assertEqual(code, 0)
+        self.assertIn("DRY RUN", out)
+        self.assertIn("nothing was moved", out)
+        self.assertIn("1 folder would be moved to the Trash", out)
+
+    def test_redirected_output_has_no_escape_codes(self):
+        with tempfile.TemporaryDirectory() as d:
+            _code, out, err, _pick_dirs, _pick_files = self.run_main(["--dry-run", d])
+        self.assertNotIn("\x1b", out + err)
+
+
+class TerminalStyleTests(unittest.TestCase):
+    def test_color_only_on_tty_without_no_color(self):
+        with mock.patch.dict(os.environ, {"TERM": "xterm-256color"}), \
+                mock.patch.object(dedup, "CURRENT_OS", dedup.OS_MACOS):
+            os.environ.pop("NO_COLOR", None)
+            self.assertIn("\x1b[", dedup.paint("x", "ok", FakeTty()))
+            self.assertEqual(dedup.paint("x", "ok", io.StringIO()), "x")
+            os.environ["NO_COLOR"] = "1"
+            self.assertEqual(dedup.paint("x", "ok", FakeTty()), "x")
+
+    def test_dumb_terminal_gets_no_color(self):
+        with mock.patch.dict(os.environ, {"TERM": "dumb"}):
+            self.assertEqual(dedup.paint("x", "danger", FakeTty()), "x")
+
+    def test_ascii_terminal_gets_ascii_glyphs(self):
+        stream = FakeTty(encoding="ascii")
+        with mock.patch.dict(os.environ, {"NO_COLOR": "1"}):
+            dedup.print_card("All clear", [("Duplicates", "none found", "ok")], "ok", stream)
+            dedup.print_status("warn", "careful", "detail", stream=stream)
+        stream.getvalue().encode("ascii")  # would raise if a Unicode glyph leaked through
+
+    def test_card_wraps_to_terminal_width_without_cutting_words(self):
+        stream = io.StringIO()
+        long_value = "2 files skipped for safety (reasons above) --include-hidden scans them"
+        with mock.patch("dedup.terminal_columns", return_value=40):
+            dedup.print_card("Done", [("Duplicates", long_value, "warn")], "warn", stream)
+        lines = stream.getvalue().splitlines()
+        self.assertTrue(all(dedup.display_width(line) <= 40 for line in lines), lines)
+        self.assertEqual(len({dedup.display_width(line) for line in lines}), 1)
+        self.assertIn("--include-hidden", stream.getvalue())
+
+    def test_wide_characters_keep_card_aligned(self):
+        stream = io.StringIO()
+        dedup.print_card("Done", [("Folder", "写真のフォルダ", "plain"), ("Other", "abc", "plain")], "ok", stream)
+        widths = {dedup.display_width(line) for line in stream.getvalue().splitlines()}
+        self.assertEqual(len(widths), 1)
+
+
 class PhotoLibraryConfirmTests(unittest.TestCase):
     def _make_library(self, parent):
         lib = os.path.join(parent, "Photos Library.photoslibrary")

@@ -108,6 +108,8 @@ The remaining guards reject input that never appears in normal use, so no ordina
 
 **ffmpeg/ffprobe are optional** — when absent, video thumbnails fall back to `fallbackVideoThumb()` (a text span/icon) and metadata fields are omitted. The UI remains functional without them.
 
+**Terminal output** — `paint()`/`glyphs()` decide color and Unicode per write from the stream itself (TTY, `NO_COLOR`, `TERM=dumb`, encoding), never cached, so redirected test output and pipes stay free of escape codes. Every run ends with `print_final_summary()`, a card built from `RunReport`; add new outcomes there rather than printing them mid-run only. Card rows word-wrap, so anything the user must copy (the session URL, file paths) is printed unboxed. Progress lines keep their `[label]` token; `ProgressLineTests` counts it.
+
 **Python 3.8+** — no walrus operator in non-trivial contexts, no `match`, no 3.10+ syntax. Standard library only (plus `send2trash`).
 
 **`sys.dont_write_bytecode = True`** is set at line 3 and `cleanup_own_bytecode()` runs at exit. Do not remove either.
