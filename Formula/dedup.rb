@@ -3,8 +3,8 @@ class Dedup < Formula
 
   desc "Local browser UI for reviewing and trashing duplicate files"
   homepage "https://github.com/pathanin/homebrew-dedup"
-  url "https://github.com/pathanin/homebrew-dedup/releases/download/v0.5.0/homebrew-dedup-0.5.0.tar.gz"
-  sha256 "85580f1eef7a77f978bb2b195bfdcfd8c1c6484a0e322ffe504322ab21610999"
+  url "https://github.com/pathanin/homebrew-dedup/releases/download/v0.5.1/homebrew-dedup-0.5.1.tar.gz"
+  sha256 "ccc709aed0f4496a7492dce1072d28a886c30fa5e6faaa48ab037227efa9d57a"
   license "MIT"
 
   depends_on "python@3.12"
