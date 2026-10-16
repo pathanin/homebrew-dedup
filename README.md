@@ -31,8 +31,11 @@ Install from this Homebrew tap:
 
 ```sh
 brew tap pathanin/dedup
+brew trust --tap pathanin/dedup
 brew install pathanin/dedup/dedup
 ```
+
+Homebrew only loads formulae from non-official taps you have trusted, so the `brew trust` step is required.
 
 ### Windows
 
