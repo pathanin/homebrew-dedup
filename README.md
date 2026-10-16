@@ -2,32 +2,21 @@
 
 [![CI](https://github.com/pathanin/homebrew-dedup/actions/workflows/ci.yml/badge.svg)](https://github.com/pathanin/homebrew-dedup/actions/workflows/ci.yml)
 
-`dedup` is a local duplicate-file review tool. It scans a folder, groups likely duplicates, opens a browser UI on your machine, and moves only the files you select to Trash or a recoverable recycle location.
+Find duplicate files in a folder, review them in your browser, and move the ones you pick to Trash.
 
-It is built for large, messy folders where you want fast duplicate detection, visual review, and conservative delete-time safety.
+```sh
+dedup ~/Downloads
+```
 
-## Highlights
-
-- Fast default scan: full hashing for small files and sampled hashing for large files
-- Exact destructive safety: sampled large-file matches are full-hashed before anything is moved
-- Background full hashing starts while you review, then narrows to the files you selected and their kept peers
-- Optional exact scan-time verification with `--full-verify`
-- Local browser review UI with filters, sortable list and grid views, and a resizable side preview pane
-- Decision summary bar shows groups, files, marked count, and reclaimable bytes at a glance
-- Per-group marked count and reclaimable size alongside the group actions
-- Folder impact strip highlights which folders hold the most marked files; click to filter, click again to clear
-- Reason column in list view co-locates the original/copy rationale with Keep and Trash controls
-- Previews for images, videos, audio, PDFs, and text files
-- Media metadata when optional tools are installed: duration, dimensions, codec, bitrate, and EXIF
-- Recoverable cleanup by default: Trash (Recycle Bin on Windows), `/usr/bin/trash` on macOS external volumes, or same-volume NAS recycle folders when available
-- Safety checks for filesystem roots, home root scans, macOS Photos libraries, stale selections, and symlink replacement
-- Empty-folder cleanup after duplicate review (skip with `--skip-empty-dirs`)
+- **Fast:** small files are fully hashed; large files are sampled, then fully verified before anything moves.
+- **Visual review:** list and grid views, previews for images, video, audio, PDFs and text.
+- **Recoverable:** files go to Trash (Recycle Bin on Windows), never permanently deleted by default.
+- **Careful:** a file is only trashed if an identical copy you're keeping still exists.
+- **Tidy:** offers to remove empty folders afterward.
 
 ## Install
 
 ### macOS / Linux
-
-Install from this Homebrew tap:
 
 ```sh
 brew tap pathanin/dedup
@@ -35,48 +24,35 @@ brew trust --tap pathanin/dedup
 brew install pathanin/dedup/dedup
 ```
 
-Homebrew only loads formulae from non-official taps you have trusted, so the `brew trust` step is required.
+The `brew trust` step is required: Homebrew only loads formulae from taps you have trusted.
+
+Update with `brew update && brew upgrade pathanin/dedup/dedup`.
 
 ### Windows
 
-Requires **Python 3.8+** (install from [python.org](https://python.org) or the Microsoft Store).
-
-In PowerShell:
+Needs **Python 3.8+**. In PowerShell:
 
 ```powershell
 irm https://raw.githubusercontent.com/pathanin/homebrew-dedup/main/install.ps1 | iex
 ```
 
-To pass options, run the same script as a scriptblock:
+Reopen your terminal, then run `dedup --help`. Rerun the same command to update.
+
+<details>
+<summary>Installer details and options</summary>
+
+The installer needs no admin rights. It:
+
+1. Finds Python (`py -3`, then `python`).
+2. Installs `send2trash` with `pip install --user`.
+3. Downloads the latest release into `%LOCALAPPDATA%\Programs\dedup`.
+4. Adds that folder to your user `PATH`.
+
+To pass options, run it as a scriptblock:
 
 ```powershell
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/pathanin/homebrew-dedup/main/install.ps1))) -Force
 ```
-
-Prefer to inspect it first? Download, read, then run:
-
-```powershell
-irm https://raw.githubusercontent.com/pathanin/homebrew-dedup/main/install.ps1 -OutFile install.ps1
-powershell -ExecutionPolicy Bypass -File install.ps1
-```
-
-By default, the installer:
-
-1. Resolves Python (tries `py -3` first, then `python`).
-2. Bootstraps pip if needed, then installs `send2trash`.
-3. Downloads the latest release from GitHub and extracts `dedup.py` + `dedup.cmd` to `%LOCALAPPDATA%\Programs\dedup`.
-4. Adds that directory to your user `PATH` (unless `-NoPathUpdate`).
-
-**No administrator privileges are required.** Every step runs in per-user scope:
-install directory under `%LOCALAPPDATA%`, `pip install --user`, and user-level `PATH` via `HKCU\Environment`.
-
-After installation, reopen your terminal and verify:
-
-```powershell
-dedup --help
-```
-
-**Installer options** — append any of these to the scriptblock form above, or to `.\install.ps1` if you downloaded it:
 
 ```powershell
 -Version v0.4.1                 # specific version
@@ -85,93 +61,39 @@ dedup --help
 -NoPathUpdate                   # skip PATH modification
 ```
 
-### Verify (all platforms)
-
-```sh
-dedup --help
-```
-
-## Optional Preview Tools
-
-`dedup` works without these tools, but they improve previews and metadata:
-
-**macOS / Linux:**
-
-```sh
-brew install ffmpeg        # video thumbnails and media duration, codec, and bitrate
-brew install exiftool      # image EXIF such as camera, lens, aperture, and GPS
-```
-
-**Windows:**
+To read the script before running it:
 
 ```powershell
-winget install Gyan.FFmpeg        # video thumbnails and media duration, codec, and bitrate
+irm https://raw.githubusercontent.com/pathanin/homebrew-dedup/main/install.ps1 -OutFile install.ps1
+powershell -ExecutionPolicy Bypass -File install.ps1
 ```
-Or download FFmpeg manually from [ffmpeg.org](https://ffmpeg.org) and add `bin\` to your `PATH`.
 
-`exiftool` on Windows requires a manual install from [exiftool.org](https://exiftool.org).
+</details>
 
-`ffmpeg` also provides `ffprobe`, which `dedup` uses for media metadata.
+### Optional: better previews
 
+Not required, but they add video thumbnails and media/photo details.
+
+```sh
+brew install ffmpeg exiftool      # macOS / Linux
+winget install Gyan.FFmpeg        # Windows (exiftool: manual install from exiftool.org)
+```
 
 ## Usage
 
-Scan a folder and open the local review UI:
-
 ```sh
-dedup /path/to/folder
+dedup /path/to/folder                   # scan and open the review UI
+dedup /path/to/folder --dry-run         # try it out without moving anything
+dedup /path/to/folder --full-verify     # fully hash every match during the scan
+dedup /path/to/folder --skip-empty-dirs # skip the empty-folder step
 ```
 
-Exercise the selection flow without moving files:
+The review UI opens at `http://127.0.0.1:7979`. Mark files Keep or Trash, then click Finish. Use `↑`/`↓` to move between files and `Escape` to close previews.
 
-```sh
-dedup /path/to/folder --dry-run
-```
-
-Fully hash candidate matches after the fast prefilter:
-
-```sh
-dedup /path/to/folder --full-verify
-```
-
-Empty folders are reviewed after duplicate-file cleanup by default. Skip that step:
-
-```sh
-dedup /path/to/folder --skip-empty-dirs
-```
-
-Use a fixed local UI port:
-
-```sh
-dedup /path/to/folder --port 7979
-```
-
-## Browser UI
-
-The review UI opens automatically at a local `http://127.0.0.1:7979` URL with a per-session token.
-
-**Header** — search, type filter, sort order, trashed-only toggle, list/grid toggle, preview pane toggle, and undo.
-
-**Summary bar** — live counts of visible groups, files, marked files, and reclaimable bytes. Finish and Cancel buttons live here so the action cost is always visible.
-
-**Folder strip** — appears below the summary bar when files are marked. Shows up to eight folders ordered by reclaimable bytes. Click a folder to filter the list to that folder; click the same button again to clear the filter.
-
-**Group headers** — each duplicate group shows its file count, hash identifier, and how many files in that group are currently marked and how many bytes would be reclaimed.
-
-**List view** — the default high-density surface. Columns: type, name, directory, size, reason (original or copy rationale), and Keep/Trash actions. Click any column header to sort; click again to reverse. Click a row to load it in the side preview pane.
-
-**Grid view** — toggle with the List button. Shows thumbnail previews for images and videos with hovering frame cycling.
-
-**Side preview pane** — resizable panel on the right. Shows a preview of the selected file and its metadata. Drag the divider to resize; the width is remembered across sessions.
-
-**Preview modal** — click a thumbnail (grid view) or the `(o)` button (list view) for a full-size preview with Keep/Trash controls and prev/next navigation.
-
-**Keyboard shortcuts** — `↑`/`↓` to move between files, `←`/`→` inside the preview modal, `Escape` to close modals.
-
-## Common Options
+<details>
+<summary>More options</summary>
 
 ```text
---fast-only                 Use sampled chunks only. This is the default; the flag has no effect.
 --full-verify               Fully hash matching candidates for exact verification.
 -d, --dry-run               Review selections without moving files.
 --yes                       Skip the final browser confirmation when trashing.
@@ -181,64 +103,27 @@ The review UI opens automatically at a local `http://127.0.0.1:7979` URL with a 
 --allow-home-root           Allow scanning your home directory root.
 --allow-photo-library       Allow scanning inside macOS .photoslibrary packages.
 -E, --skip-empty-dirs       Skip the empty-folder review that runs after file cleanup.
---allow-slow-local-trash    Allow last-resort copies to a local trash fallback (macOS ~/.Trash)
+--allow-slow-local-trash    Allow last-resort copies to a local trash fallback (macOS ~/.Trash).
 --permanent-on-no-trash     Permanently delete when no recoverable trash route works.
 --port PORT                 Port for the local browser UI.
+--fast-only                 Sampled hashing only. This is the default; the flag has no effect.
 ```
 
-Run `dedup --help` for the full option list.
+Run `dedup --help` for the full list.
 
-## Safety Model
+</details>
 
-`dedup` does not permanently delete by default. Selected files are moved to Trash or to an existing same-volume recycle folder where supported.
+## Safety
 
-Before destructive actions, `dedup` revalidates selected files against the scanned duplicate groups: size and content hash must still match, and at least one unselected copy in the group must still be a regular file with identical full content. A file whose kept copy has vanished or changed is skipped, never trashed. Background full hashing starts during browser review to reduce the final wait, and pending work outside the submitted selection is abandoned after you click Move. Permanent deletion on volumes without a recycle bin repeats these checks immediately before each removal. Empty-folder cleanup also rechecks that folders are still empty before removal; only known system files such as `.DS_Store` count as empty, so a folder holding a hidden file like `.env` is kept.
+- **Nothing is permanently deleted by default.** Files go to Trash, `/usr/bin/trash` on macOS external volumes, or a same-volume NAS recycle folder (`#recycle`, `@Recycle`, `.recycle`).
+- **Every file is rechecked before it moves.** Its size and full content must still match, and at least one copy you're keeping must still exist with identical content. Otherwise it's skipped.
+- **Risky folders are refused.** Filesystem roots are blocked; your home folder needs `--allow-home-root`; macOS Photos libraries need `--allow-photo-library`.
+- **No Trash available?** Non-interactive runs skip the file; interactive runs ask. `--permanent-on-no-trash` allows real deletion, with the same checks repeated right before each removal.
+- **Empty folders** are rechecked before removal. Only system files like `.DS_Store` count as empty, so a folder holding `.env` is kept.
 
-Risky scan roots are guarded. Filesystem roots are refused, home-directory root scans require `--allow-home-root`, and macOS Photos libraries require `--allow-photo-library`.
-
-When trashing fails, `dedup` tries recoverable paths first:
-
-1. `send2trash` (system Trash / Recycle Bin)
-2. `/usr/bin/trash` on macOS external volumes
-3. Existing same-volume NAS recycle folders such as `#recycle`, `@Recycle`, or `.recycle`
-
-If no recoverable trash path exists, `dedup` skips the file in non-interactive mode. Interactive runs ask what to do. Use `--allow-slow-local-trash` to allow copying into a local trash fallback (`~/.Trash` on macOS); use `--permanent-on-no-trash` only when irreversible deletion is acceptable.
-
-## Direct Python Use
-
-You can also run the script directly:
-
-```sh
-python3 dedup.py /path/to/folder
-```
-
-Install `send2trash` for actual Trash moves when running directly from Python:
+## Run with Python directly
 
 ```sh
 python3 -m pip install send2trash
-```
-
-Optional preview tools are still discovered from your `PATH`.
-
-## Update
-
-**macOS / Linux (Homebrew):**
-
-```sh
-brew update
-brew upgrade pathanin/dedup/dedup
-```
-
-If you already installed it and want to reinstall the current formula:
-
-```sh
-brew reinstall pathanin/dedup/dedup
-```
-
-**Windows:**
-
-Rerun the one-liner — it upgrades in place:
-
-```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/pathanin/homebrew-dedup/main/install.ps1))) -Force
+python3 dedup.py /path/to/folder
 ```
