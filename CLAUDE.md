@@ -118,6 +118,14 @@ The remaining guards reject input that never appears in normal use, so no ordina
 
 **`sys.dont_write_bytecode = True`** is set at line 3 and `cleanup_own_bytecode()` runs at exit. Do not remove either.
 
+## Known issues (accepted, not bugs to fix)
+
+**`testfile/` is gitignored but documented as the manual-test fixture.** On purpose: it can hold large or private media that should not be committed, so a fresh clone does not have it. For manual browser checks, build a throwaway fixture by copying a few files into two folders (plus one extra copy), then run `--dry-run` against it. `test_dedup.py` is also listed in `.gitignore`, which has no effect because the file is tracked.
+
+**`localStorage["dedup:" + sessionId]` is never removed.** `saveSelections()` writes one small entry per review session so an accidental reload restores the user's selections. Clearing it on confirm would lose that, and stale entries are tiny and per-origin.
+
+Deferred fixes for other confirmed findings are planned in `PLAN.md`.
+
 ## Color palette (CSS custom properties)
 
 Defined in `_SHARED_CSS`. Zinc/slate neutral scale, system-preference dark mode only (no toggle).
