@@ -747,9 +747,16 @@ _THUMBNAIL_CHILDREN = set()
 _THUMBNAIL_CHILDREN_LOCK = threading.Lock()
 
 
-def _track_thumbnail_child(process):
+def _track_thumbnail_child(process, stop_event):
     with _THUMBNAIL_CHILDREN_LOCK:
         _THUMBNAIL_CHILDREN.add(process)
+        # Shutdown sets the event before snapshotting under this lock, so a
+        # child registered after the snapshot has to stop itself here.
+        if stop_event is not None and stop_event.is_set():
+            try:
+                process.terminate()
+            except OSError:
+                pass
 
 
 def _untrack_thumbnail_child(process):
@@ -809,7 +816,7 @@ def render_thumbnail(path, width=360, height=240, thumb_index=0, stop_event=None
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
-            _track_thumbnail_child(process)
+            _track_thumbnail_child(process, stop_event)
             try:
                 stdout, stderr = process.communicate(timeout=20)
             except subprocess.TimeoutExpired:
@@ -4316,22 +4323,27 @@ class FullHashPreloader:
         if (
             before.st_size != after.st_size
             or before.st_mtime_ns != after.st_mtime_ns
+            or before.st_ctime_ns != after.st_ctime_ns
             or not stat.S_ISREG(after.st_mode)
             or _is_cloud_placeholder(after)
             or self._should_abort_path(path)
         ):
             return None
-        return before.st_size, before.st_mtime_ns, hasher.hexdigest()
+        return before.st_size, before.st_mtime_ns, before.st_ctime_ns, hasher.hexdigest()
 
     def _entry_digest_if_current(self, path, entry):
         if not entry:
             return None
-        expected_size, expected_mtime_ns, digest = entry
+        expected_size, expected_mtime_ns, expected_ctime_ns, digest = entry
         try:
             current = os.stat(path, follow_symlinks=False)
         except OSError:
             return None
-        if current.st_size != expected_size or current.st_mtime_ns != expected_mtime_ns:
+        if (
+            current.st_size != expected_size
+            or current.st_mtime_ns != expected_mtime_ns
+            or current.st_ctime_ns != expected_ctime_ns
+        ):
             return None
         return digest
 
@@ -4504,7 +4516,7 @@ class FullHashPreloader:
                     self.failed.add(path)
                 self.in_flight.discard(path)
                 self.condition.notify_all()
-        return entry[2] if entry else None
+        return entry[3] if entry else None
 
 
 def revalidate_file(path, expected_size, expected_hash, expected_hash_name):
