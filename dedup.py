@@ -141,7 +141,7 @@ DEFAULT_IGNORE_DIRS = {
     "Documents and Settings",
 }
 DEFAULT_IGNORE_FILES = {
-    ".DS_Store", "Thumbs.db", ".localized", "Icon?", "desktop.ini", "pagefile.sys",
+    ".DS_Store", "Thumbs.db", ".localized", "Icon\r", "desktop.ini", "pagefile.sys",
     "hiberfil.sys", "swapfile.sys", ".metadata_never_index", "autorun.inf", "boot.ini",
     "bootmgr", "BOOTNXT", "bootsect.bak", "ntldr", "ntuser.dat", "ntuser.dat.log",
     "ntuser.ini", "system.ini", "win.ini",
@@ -1593,13 +1593,14 @@ button.danger-action { background: var(--danger); border-color: var(--danger); c
 .folder-clear { margin-left: 2px; font-style: normal; }
 .content-scroll { overflow-y: scroll; overflow-x: hidden; flex: 1; contain: layout size; }
 .content { padding: 12px 16px; }
-.group { margin-bottom: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; min-height: 100px; }
+.group { position: relative; margin-bottom: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; min-height: 100px; }
 .group-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px; background: var(--surface); font-size: 12px; }
 .group-title { min-width: 0; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .group-title span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .group-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .group-actions > button { font-size: 11px; padding: 3px 8px; border-radius: 4px; }
 .group-actions .trash-copies { border-color: var(--danger-border); color: var(--danger); background: var(--danger-bg); }
+.group:has(.dir-picker) { overflow: visible; z-index: 5; }\
 .group-impact { font-size: 11px; color: var(--muted); }
 .files { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; padding: 10px; }
 .file { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--panel); position: relative; display: grid; grid-template-rows: 140px 1fr; transition: border-color .12s; }
@@ -2083,8 +2084,8 @@ function folderRuleLabel(rule) {
   return `${rule.type === "keep" ? "Keep" : "Mark for Trash"}${rule.subtree ? " subtree" : " exact"}`;
 }
 function basenameForDirectory(directory) {
-  const trimmed = String(directory || ".").replace(/[\\/]+$/, "");
-  const parts = trimmed.split(/[\\/]+/);
+  const trimmed = String(directory || ".").replace(/[\\\\/]+$/, "");
+  const parts = trimmed.split(/[\\\\/]+/);
   return parts[parts.length - 1] || trimmed || ".";
 }
 function addFolderRule(directory, type, subtree) {
@@ -2228,6 +2229,7 @@ function refreshSelectionUi(changedIds = []) {
     return;
   }
   changedIds.forEach(updateFileCard);
+  new Set(changedIds.map(id => { const card = findCard(id); return card && card.closest(".group"); })).forEach(updateGroupImpact);
   updateStats();
   saveSelections();
 }
@@ -2940,13 +2942,24 @@ async function revealFile(fileId, button) {
     setTimeout(() => { button.disabled = false; button.textContent = originalText; }, 1600);
   }
 }
+function groupImpactHtml(files) {
+  const groupTrashCount = files.filter(f => trash.has(f.id)).length;
+  const groupTrashBytes = files.reduce((s, f) => trash.has(f.id) ? s + f.size : s, 0);
+  return groupTrashCount > 0 ? `<span class="group-impact">${groupTrashCount} marked · ${formatSize(groupTrashBytes)}</span>` : "";
+}
+function updateGroupImpact(groupEl) {
+  const group = groupEl && groupById.get(groupEl.dataset.groupId);
+  const title = groupEl && groupEl.querySelector(".group-title");
+  if (!group || !title) return;
+  const old = title.querySelector(".group-impact");
+  if (old) old.remove();
+  title.insertAdjacentHTML("beforeend", groupImpactHtml(group._visibleFiles || visibleFilesForGroup(group, getFilters())));
+}
 function renderGroupContent(el, group) {
   el.dataset.rendered = "1";
   const files = group._visibleFiles || visibleFilesForGroup(group, getFilters());
   const fileCountLabel = files.length === group.files.length ? `${group.files.length} files` : `${files.length} of ${group.files.length} files`;
-  const groupTrashCount = files.filter(f => trash.has(f.id)).length;
-  const groupTrashBytes = files.reduce((s, f) => trash.has(f.id) ? s + f.size : s, 0);
-  const groupImpactHtml = groupTrashCount > 0 ? `<span class="group-impact">${groupTrashCount} marked · ${formatSize(groupTrashBytes)}</span>` : "";
+  const impactHtml = groupImpactHtml(files);
   const cards = files.map((file) => {
     const isTrash = trash.has(file.id);
     const typeLabel = {"image":"IMG","video":"VID","audio":"AUD","pdf":"PDF","text":"TXT"}[file.previewKind] || "—";
@@ -2957,7 +2970,7 @@ function renderGroupContent(el, group) {
       <div class="meta"><div class="file-type-badge">${esc(typeLabel)}</div><div class="name" title="${esc(file.name)}">${esc(file.name)}</div><div class="path" title="${esc(file.path)}">${esc(file.directory)}</div><div class="badges">${fileBadgesHtml(file, isTrash)}</div><div class="file-size-lv">${esc(file.sizeLabel)}</div><div class="file-reason">${esc(reasonText)}</div><div class="choice"><button class="lv-preview-btn" data-action="preview" data-group-id="${esc(group.id)}" title="Preview">(o)</button><button class="${!isTrash ? 'active keep' : 'keep'}" data-mark="keep" title="Keep (K)">Keep</button><button class="${isTrash ? 'active trash' : 'trash'}" data-mark="trash" title="Trash (T)">Trash</button></div></div>
     </article>`;
   }).join("");
-  el.innerHTML = `<div class="group-head"><div class="group-title"><b>${fileCountLabel}</b><span title="${esc(group.hashName + ' ' + group.hash)}" style="cursor:help">${esc(group.hashName)}</span>${groupImpactHtml}</div><div class="group-actions" data-group-id="${esc(group.id)}"><button class="trash-copies" data-group-action="trash">Trash copies</button><button data-group-action="folder">By folder</button><button data-group-action="oldest">Keep oldest</button><button data-group-action="none">Keep all</button></div></div><div class="files">${cards}</div>`;
+  el.innerHTML = `<div class="group-head"><div class="group-title"><b>${fileCountLabel}</b><span title="${esc(group.hashName + ' ' + group.hash)}" style="cursor:help">${esc(group.hashName)}</span>${impactHtml}</div><div class="group-actions" data-group-id="${esc(group.id)}"><button class="trash-copies" data-group-action="trash">Trash copies</button><button data-group-action="folder">By folder</button><button data-group-action="oldest">Keep oldest</button><button data-group-action="none">Keep all</button></div></div><div class="files">${cards}</div>`;
   el.onmouseenter = () => {
     el.dataset.hovering = "1";
     hydrateVideoMetadata(el).then(() => {
@@ -3464,7 +3477,7 @@ class _BaseHandler(BaseHTTPRequestHandler):
                     start = int(m.group(1))
                     end_str = m.group(2)
 
-                    if start >= size:
+                    if start >= size or (end_str != "" and int(end_str) < start):
                         self.send_response(416)
                         self.send_header("Content-Range", "bytes */" + str(size))
                         self.send_header("Accept-Ranges", "bytes")
@@ -3939,7 +3952,7 @@ function buildTree(paths) {
 function nearestAncestor(path, pathSet) {
   let p = path;
   while (true) {
-    const i = p.lastIndexOf('/');
+    const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\\\'));
     if (i <= 0) return null;
     p = p.slice(0, i);
     if (!p) return null;
@@ -3958,10 +3971,11 @@ function collectChildren(path, childrenMap, continuationPrefix, result) {
 }
 
 function effectiveSelection() {
-  const sorted = [...selected].sort((a, b) => a.split('/').length - b.split('/').length);
+  const depth = p => p.split(/[\\\\/]/).length;
+  const sorted = [...selected].sort((a, b) => depth(a) - depth(b));
   const accepted = [];
   for (const p of sorted) {
-    if (!accepted.some(a => p.startsWith(a + '/'))) accepted.push(p);
+    if (!accepted.some(a => p.startsWith(a + '/') || p.startsWith(a + '\\\\'))) accepted.push(p);
   }
   return accepted;
 }
@@ -4059,24 +4073,31 @@ function showDone(label) {
   setTimeout(() => window.close(), 800);
 }
 
+async function postSelection(body) {
+  const buttons = document.querySelectorAll('button');
+  buttons.forEach(b => b.disabled = true);
+  try {
+    const res = await fetch(authUrl('/api/empty-dirs-selection'), {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return true;
+  } catch (err) {
+    buttons.forEach(b => b.disabled = false);
+    alert('Could not reach the dedup server (' + err.message + '). Check the terminal and try again.');
+    return false;
+  }
+}
+
 async function doConfirm() {
-  document.querySelectorAll('button').forEach(b => b.disabled = true);
   closeConfirm();
-  await fetch(authUrl('/api/empty-dirs-selection'), {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({selected: effectiveSelection()}),
-  });
-  showDone('Done');
+  if (await postSelection({selected: effectiveSelection()})) showDone('Done');
 }
 
 async function cancel() {
-  await fetch(authUrl('/api/empty-dirs-selection'), {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({cancelled: true}),
-  });
-  showDone('Cancelled');
+  if (await postSelection({cancelled: true})) showDone('Cancelled');
 }
 
 init();

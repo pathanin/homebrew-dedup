@@ -4,6 +4,8 @@ import http.client
 import io
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -96,6 +98,10 @@ class CliTests(unittest.TestCase):
 
         self.assertIn("cache", options.ignore_dirs)
         self.assertIn(".tmp", options.ignore_files)
+
+    def test_macos_custom_icon_file_is_ignored(self):
+        options = dedup.build_options(dedup.parse_args(["."]))
+        self.assertTrue(dedup.should_ignore_entry("Icon\r", False, options))
 
     def test_allow_slow_local_trash_defaults_to_false(self):
         args = dedup.parse_args(["."])
@@ -673,8 +679,9 @@ class BrowserHelperTests(unittest.TestCase):
     def test_empty_dirs_html_posts_effective_selection(self):
         html = dedup.build_empty_dirs_html()
 
-        self.assertIn("body: JSON.stringify({selected: effectiveSelection()})", html)
-        self.assertNotIn("body: JSON.stringify({selected: [...selected]})", html)
+        self.assertIn("postSelection({selected: effectiveSelection()})", html)
+        self.assertIn("body: JSON.stringify(body)", html)
+        self.assertNotIn("selected: [...selected]", html)
 
     def test_browser_selection_keeps_one_file_per_group(self):
         group = dedup.DuplicateGroup(
@@ -903,6 +910,52 @@ class BrowserHelperTests(unittest.TestCase):
                     thread.join(timeout=2)
 
             self.assertEqual(set(started), set(paths))
+
+
+def _extract_js_function(html, name):
+    start = html.index(f"function {name}(")
+    depth = 0
+    for i in range(html.index("{", start), len(html)):
+        if html[i] == "{":
+            depth += 1
+        elif html[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return html[start:i + 1]
+    raise ValueError(name)
+
+
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class WindowsPathJsTests(unittest.TestCase):
+    """Run generated browser JS under node with native Windows paths."""
+
+    def _run(self, html, names, expr, prelude=""):
+        source = "\n".join(_extract_js_function(html, n) for n in names)
+        script = f"{prelude}\n{source}\nprocess.stdout.write(JSON.stringify({expr}));"
+        out = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout
+        return json.loads(out)
+
+    def test_basename_for_directory_splits_backslashes(self):
+        html = dedup.build_browser_html()
+        result = self._run(html, ["basenameForDirectory"],
+                           "[basenameForDirectory('C:\\\\Users\\\\oat\\\\Photos\\\\'), basenameForDirectory('/a/b')]")
+        self.assertEqual(result, ["Photos", "b"])
+
+    def test_empty_dir_tree_nests_windows_paths(self):
+        html = dedup.build_empty_dirs_html()
+        result = self._run(
+            html, ["nearestAncestor"],
+            "nearestAncestor('C:\\\\x\\\\old\\\\a', new Set(['C:\\\\x\\\\old']))",
+        )
+        self.assertEqual(result, "C:\\x\\old")
+
+    def test_effective_selection_drops_windows_children(self):
+        html = dedup.build_empty_dirs_html()
+        result = self._run(
+            html, ["effectiveSelection"], "effectiveSelection()",
+            prelude="const selected = new Set(['C:\\\\x\\\\old\\\\a', 'C:\\\\x\\\\old', 'C:\\\\x\\\\older']);",
+        )
+        self.assertEqual(sorted(result), ["C:\\x\\old", "C:\\x\\older"])
 
 
 class TrashSafetyTests(unittest.TestCase):
@@ -2165,6 +2218,19 @@ class RangeRequestTests(unittest.TestCase):
         conn = http.client.HTTPConnection("127.0.0.1", server.server_port)
         try:
             conn.request("GET", f"/media/{file_id}?token={server.dedup_token}", headers={"Range": "bytes=999999999-"})
+            response = conn.getresponse()
+            response.read()
+            self.assertEqual(response.status, 416)
+            self.assertEqual(response.getheader("Content-Range"), "bytes */1000")
+        finally:
+            conn.close()
+
+    def test_range_reversed_is_unsatisfiable(self):
+        path = self._create_temp_file()
+        server, _thread, file_id = self._start_server(path)
+        conn = http.client.HTTPConnection("127.0.0.1", server.server_port)
+        try:
+            conn.request("GET", f"/media/{file_id}?token={server.dedup_token}", headers={"Range": "bytes=100-50"})
             response = conn.getresponse()
             response.read()
             self.assertEqual(response.status, 416)
