@@ -1556,56 +1556,59 @@ def build_reveal_command(path, current_os=CURRENT_OS):
 # Shared across both UI pages. Edit here to change the palette, base rules, or esc().
 _SHARED_CSS = """\
 :root {
-  color-scheme: light dark;
-  --bg: #fafafa;
-  --panel: #ffffff;
-  --text: #18181b;
-  --muted: #71717a;
-  --line: #e4e4e7;
-  --surface: #f4f4f5;
+  color-scheme: light;
+  --bg-page: #ffffff;
+  --bg-sidebar: #fafafa;
+  --bg-raised: #ffffff;
+  --tint-hover: rgba(0,0,0,.05);
+  --tint-selected: rgba(0,0,0,.10);
+  --tint-track: rgba(11,11,11,.05);
+  --text-primary: rgba(0,0,0,.90);
+  --text-secondary: rgba(0,0,0,.60);
+  --text-muted: rgba(0,0,0,.47);
+  --border: rgba(0,0,0,.08);
+  --border-strong: rgba(0,0,0,.10);
+  --ring-composer: rgba(0,0,0,.12);
+  --radius-sm: 4px; --radius-md: 6px; --radius: 8px; --radius-xl: 12px; --radius-composer: 14px;
+  --shadow-ring: 0 0 0 1px var(--border);
+  --shadow-thumb: inset 0 0 0 1px var(--border), 0 1px 2px rgba(0,0,0,.05);
+  --shadow-sm: 0 0 0 1px var(--border), 0 1px 2px rgba(11,11,11,.06), 0 2px 8px rgba(11,11,11,.08);
+  --shadow-panel: 0 0 0 1px var(--border), 0 8px 24px rgba(0,0,0,.12), 0 2px 6px rgba(0,0,0,.08);
+  --weight-body: 400; --weight-control: 435; --weight-header: 520; --weight-semibold: 580;
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --dur-fast: 60ms; --dur: 200ms;
+  --bg: var(--bg-sidebar);
+  --panel: var(--bg-page);
+  --surface: rgba(0,0,0,.04);
+  --line: var(--border);
+  --text: var(--text-primary);
+  --muted: var(--text-secondary);
+  --hover-tint: var(--tint-hover);
   --keep: #16a34a;
-  --keep-bg: #f0fdf4;
-  --keep-border: #86efac;
+  --keep-bg: rgba(22,163,74,.08);
+  --keep-border: rgba(22,163,74,.35);
   --danger: #dc2626;
-  --danger-bg: #fef2f2;
-  --danger-border: #fca5a5;
-  --hover-tint: rgba(0,0,0,.06);
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #09090b;
-    --panel: #18181b;
-    --text: #fafafa;
-    --muted: #a1a1aa;
-    --line: #27272a;
-    --surface: #27272a;
-    --keep: #22c55e;
-    --keep-bg: #052e16;
-    --keep-border: #166534;
-    --danger: #ef4444;
-    --danger-bg: #450a0a;
-    --danger-border: #991b1b;
-    --hover-tint: rgba(255,255,255,.08);
-  }
+  --danger-bg: rgba(220,38,38,.07);
+  --danger-border: rgba(220,38,38,.35);
 }
 * { box-sizing: border-box; }
-button { border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); padding: 6px 10px; font: inherit; cursor: pointer; white-space: nowrap; }
+button { border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--bg-raised); color: var(--text); padding: 5px 10px; font: inherit; font-weight: var(--weight-control); cursor: pointer; white-space: nowrap; }
 button.primary { background: var(--text); border-color: var(--text); color: var(--panel); }
 button:disabled { opacity: .45; cursor: not-allowed; }
 button:hover:not(:disabled) { box-shadow: inset 0 0 0 100vmax var(--hover-tint); }
-.modal-backdrop { position: fixed; inset: 0; z-index: 50; display: none; align-items: center; justify-content: center; padding: 20px; background: rgba(0,0,0,.48); opacity: 0; pointer-events: none; transition: opacity 150ms ease-in, display 150ms allow-discrete; }
+.modal-backdrop { position: fixed; inset: 0; z-index: 50; display: none; align-items: center; justify-content: center; padding: 20px; background: rgba(0,0,0,.32); opacity: 0; pointer-events: none; transition: opacity 150ms ease-in, display 150ms allow-discrete; }
 .modal-backdrop .modal { transform: scale(0.96); transition: transform 150ms ease-in; }
 .modal-backdrop.is-open { display: flex; opacity: 1; pointer-events: auto; }
 .modal-backdrop.is-open .modal { transform: none; }
-.modal h2 { margin: 0; font-size: 15px; }
-.modal p { margin: 0; color: var(--muted); font-size: 12px; }
+.modal h2 { margin: 0; font-size: 16px; font-weight: var(--weight-header); }
+.modal p { margin: 0; color: var(--muted); font-size: 13px; }
 .modal-backdrop.is-open { transition: opacity 200ms cubic-bezier(0.23, 1, 0.32, 1), display 200ms allow-discrete; }
 .modal-backdrop.is-open .modal { transition: opacity 200ms cubic-bezier(0.23, 1, 0.32, 1), transform 200ms cubic-bezier(0.23, 1, 0.32, 1); }
 @starting-style {
   .modal-backdrop.is-open { opacity: 0; }
   .modal-backdrop.is-open .modal { opacity: 0; transform: scale(0.96); }
 }
-button { transition: transform 160ms cubic-bezier(0.23, 1, 0.32, 1); }
+button { transition: transform var(--dur-fast) var(--ease), box-shadow var(--dur) var(--ease), background-color var(--dur) var(--ease), border-color var(--dur) var(--ease); }
 button:active:not(:disabled) { transform: scale(0.97); }
 @media (prefers-reduced-motion: reduce) { .modal-backdrop .modal, .dir-picker { transform: none !important; } button:active:not(:disabled) { transform: none; } }\
 """
@@ -1635,37 +1638,43 @@ def build_browser_html():
 + _SHARED_CSS
 + """
 /* ── page-specific ─────────────────────────────────── */
-body { margin: 0; font: 13px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; }
-header { position: sticky; top: 0; z-index: 10; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); flex-shrink: 0; }
-input[type="search"] { flex: 1; min-width: 140px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); font: inherit; }
-input[type="search"]:focus { outline: 2px solid var(--text); outline-offset: 1px; }
-select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); font: inherit; cursor: pointer; }
+body { margin: 0; font: 14px/20px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; }
+header { position: sticky; top: 0; z-index: 10; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 8px 16px; background: var(--panel); border-bottom: 1px solid var(--line); flex-shrink: 0; }
+input[type="search"] { flex: 1; min-width: 140px; height: 32px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--bg-raised); color: var(--text); font: inherit; transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease); }
+input[type="search"]:focus { outline: 2px solid var(--text-secondary); outline-offset: 1px; }
+input::placeholder { color: var(--text-muted); }
+select { height: 32px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--bg-raised); color: var(--text); font: inherit; cursor: pointer; transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease); }
 button.keep { color: var(--keep); }
 button.danger { color: var(--danger); }
-button#cancel { background: transparent; border-color: transparent; color: var(--muted); font-size: 12px; }
+button#cancel { background: transparent; border-color: transparent; color: var(--muted); font-size: 14px; }
 button#cancel:hover { color: var(--text); }
-button[aria-pressed="true"], button.active-toggle { border-color: var(--text); }
-.stats-bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 6px 16px; background: var(--surface); border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); flex-shrink: 0; }
+button[aria-pressed="true"], button.active-toggle { background: var(--tint-selected); border-color: transparent; }
+.stats-bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 6px 16px; background: var(--bg); border-bottom: 1px solid var(--line); font-size: 13px; color: var(--muted); flex-shrink: 0; }
 .stats-inline { display: flex; gap: 6px; flex-wrap: wrap; }
-.stats-inline b { color: var(--text); font-weight: 600; }
+.stats-inline b { color: var(--text); font-weight: var(--weight-semibold); }
 .filter-hint { font-style: italic; }
 .header-divider { width: 1px; background: var(--line); align-self: stretch; margin: 0 2px; flex-shrink: 0; }
 .header-actions { display: flex; gap: 6px; align-items: center; margin-left: auto; }
 button.danger-action { background: var(--danger); border-color: var(--danger); color: #fff; }
+#cancel.is-pending { background: var(--tint-selected); color: var(--text); }
+#undo { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+.submit-error { color: var(--danger); font-size: 13px; }
+.modal p.submit-error { color: var(--danger); }
+.submit-error:empty { display: none; }
 .folder-clear { margin-left: 2px; font-style: normal; }
 .content-scroll { overflow-y: scroll; overflow-x: hidden; flex: 1; contain: layout size; }
 .content { padding: 12px 16px; }
-.group { position: relative; margin-bottom: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; min-height: 100px; }
-.group-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px; background: var(--surface); font-size: 12px; }
+.group { position: relative; margin-bottom: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-xl); overflow: hidden; min-height: 100px; }
+.group-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px; background: var(--surface); font-size: 13px; }
 .group-title { min-width: 0; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .group-title span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .group-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-.group-actions > button { font-size: 11px; padding: 3px 8px; border-radius: 4px; }
+.group-actions > button { font-size: 12px; padding: 3px 8px; border-radius: var(--radius-md); }
 .group-actions .trash-copies { border-color: var(--danger-border); color: var(--danger); background: var(--danger-bg); }
 .group:has(.dir-picker) { overflow: visible; z-index: 5; }\
 .group-impact { font-size: 11px; color: var(--muted); }
 .files { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; padding: 10px; }
-.file { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--panel); position: relative; display: grid; grid-template-rows: 140px 1fr; transition: border-color .12s; }
+.file { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; background: var(--panel); position: relative; display: grid; grid-template-rows: 140px 1fr; transition: border-color var(--dur) var(--ease); }
 .file.is-trash { border-color: var(--danger-border); }
 .file.is-trash .thumb { opacity: .55; filter: grayscale(.35); }
 .file.is-keep { border-color: var(--keep-border); }
@@ -1676,9 +1685,9 @@ button.danger-action { background: var(--danger); border-color: var(--danger); c
 .thumb img { width: 100%; max-height: 140px; object-fit: contain; display: block; }
 .thumb iframe { width: 100%; height: 100%; border: 0; background: var(--panel); display: block; pointer-events: none; }
 .video-fallback { display: block; padding: 20px; text-align: center; color: var(--muted); font-size: 12px; word-break: break-word; }
-.text-preview { width: 100%; height: 100%; max-height: 108px; margin: 0; padding: 8px; overflow: hidden; white-space: pre-wrap; font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--text); background: var(--surface); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 7; }
+.text-preview { width: 100%; height: 100%; max-height: 108px; margin: 0; padding: 8px; overflow: hidden; white-space: pre-wrap; font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--text); background: transparent; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 7; }
 .meta { padding: 8px; display: flex; flex-direction: column; gap: 5px; min-width: 0; }
-.name { font-weight: 600; font-size: 12px; word-break: break-all; line-height: 1.3; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.name { font-weight: var(--weight-semibold); font-size: 13px; word-break: break-all; line-height: 1.3; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .path { color: var(--muted); font-size: 11px; word-break: break-all; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .badges { display: flex; gap: 4px; flex-wrap: wrap; align-content: flex-start; min-height: 16px; }
 .badge { font-size: 11px; line-height: 16px; padding: 1px 6px; border-radius: 999px; background: var(--surface); color: var(--muted); height: 18px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1686,62 +1695,62 @@ button.danger-action { background: var(--danger); border-color: var(--danger); c
 .badge.manual { color: var(--text); font-style: italic; }
 .badge.hardlink { background: transparent; box-shadow: inset 0 0 0 1px var(--line); }
 .choice { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--line); margin-top: auto; }
-.choice button { border: 0; border-radius: 0; padding: 6px; font-size: 12px; font-weight: 500; background: transparent; color: var(--muted); }
-.choice button.active.keep { background: var(--keep-bg); color: var(--keep); font-weight: 600; }
-.choice button.active.trash { background: var(--danger-bg); color: var(--danger); font-weight: 600; }
+.choice button { border: 0; border-radius: 0; padding: 6px; font-size: 13px; font-weight: var(--weight-control); background: transparent; color: var(--muted); }
+.choice button.active.keep { background: var(--keep-bg); color: var(--keep); font-weight: var(--weight-semibold); }
+.choice button.active.trash { background: var(--danger-bg); color: var(--danger); font-weight: var(--weight-semibold); }
 .choice button:active, .folder-row:active { transform: none; }
 .choice button.keep:active:not(:disabled) { background: var(--keep-bg); color: var(--keep); }
 .choice button.trash:active:not(:disabled) { background: var(--danger-bg); color: var(--danger); }
 #previewOverlay, #previewOverlay .modal { transition: none; }
 .choice button.keep:not(.active):hover { background: var(--keep-bg); color: var(--keep); }
 .choice button.trash:not(.active):hover { background: var(--danger-bg); color: var(--danger); }
-.reveal-btn { position: absolute; top: 6px; right: 6px; border: 1px solid var(--line); background: var(--panel); opacity: 0; transition: opacity .15s; z-index: 2; padding: 3px 7px; font-size: 11px; border-radius: 5px; }
+.reveal-btn { position: absolute; top: 6px; right: 6px; border: 1px solid var(--border-strong); background: var(--bg-raised); opacity: 0; transition: opacity var(--dur) var(--ease); z-index: 2; padding: 3px 7px; font-size: 11px; border-radius: var(--radius-md); }
 .file:hover .reveal-btn, .file:focus-within .reveal-btn { opacity: 1; }
 .empty-state { padding: 48px 20px; color: var(--muted); text-align: center; display: grid; justify-items: center; gap: 12px; }
 .empty-state button { color: var(--text); }
 .folder-strip { display: none; flex-wrap: wrap; gap: 4px; padding: 4px 16px; background: var(--panel); border-bottom: 1px solid var(--line); flex-shrink: 0; }
-.folder-row { display: inline-flex; flex-direction: column; gap: 1px; padding: 2px 8px; border-radius: 4px; font: inherit; font-size: 10px; text-align: left; border: 1px solid var(--line); background: transparent; cursor: pointer; max-width: 200px; overflow: hidden; }
-.folder-row:hover:not(:disabled) { background: var(--surface); }
-.folder-row.is-active { background: var(--surface); border-color: var(--text); }
+.folder-row { display: inline-flex; flex-direction: column; gap: 1px; padding: 2px 8px; border-radius: var(--radius-md); font: inherit; font-size: 11px; text-align: left; border: 1px solid var(--border); background: transparent; cursor: pointer; max-width: 200px; overflow: hidden; }
+.folder-row:hover:not(:disabled) { background: var(--tint-hover); }
+.folder-row.is-active { background: var(--tint-selected); border-color: transparent; }
 .folder-row b { color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
 .folder-row span { color: var(--muted); white-space: nowrap; }
-.modal { width: min(440px, 100%); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 20px; display: grid; gap: 14px; }
+.modal { width: min(440px, 100%); background: var(--panel); border: 0; border-radius: var(--radius-composer); box-shadow: var(--shadow-panel); padding: 20px; display: grid; gap: 14px; }
 .modal.wide { width: min(920px, 100%); max-height: 90vh; overflow: auto; }
 .modal-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.confirm-list, .preview-meta { max-height: 160px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; padding: 8px; background: var(--surface); font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.confirm-list, .preview-meta { max-height: 160px; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius); padding: 8px; background: var(--surface); font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
 .confirm-list div, .preview-meta div { word-break: break-word; overflow-wrap: anywhere; margin-bottom: 4px; }
 .confirm-folders { display: grid; gap: 4px; font-size: 11px; color: var(--muted); }
 .preview-header { display: flex; align-items: flex-start; gap: 12px; justify-content: space-between; min-width: 0; }
 .preview-header > div, .preview-header h2 { min-width: 0; }
 .preview-header h2 { overflow-wrap: anywhere; word-break: break-word; }
 .preview-decision { display: flex; gap: 6px; flex-shrink: 0; }
-.preview-keep-btn { color: var(--keep); border-color: var(--keep-border); background: var(--keep-bg); font-size: 12px; padding: 4px 10px; }
+.preview-keep-btn { color: var(--keep); border-color: var(--keep-border); background: var(--keep-bg); font-size: 13px; padding: 4px 10px; }
 .preview-keep-btn.active { background: var(--keep); color: #fff; border-color: var(--keep); }
-.preview-trash-btn { color: var(--danger); border-color: var(--danger-border); background: var(--danger-bg); font-size: 12px; padding: 4px 10px; }
+.preview-trash-btn { color: var(--danger); border-color: var(--danger-border); background: var(--danger-bg); font-size: 13px; padding: 4px 10px; }
 .preview-trash-btn.active { background: var(--danger); color: #fff; border-color: var(--danger); }
-.preview-body { min-height: 320px; min-width: 0; display: grid; place-items: center; background: var(--surface); border-radius: 8px; overflow: hidden; }
+.preview-body { min-height: 320px; min-width: 0; display: grid; place-items: center; background: var(--surface); border-radius: var(--radius); overflow: hidden; }
 .preview-body img, .preview-body iframe, .preview-body video { max-width: 100%; width: 100%; max-height: 70vh; border: 0; object-fit: contain; background: var(--panel); }
-.preview-body pre { width: 100%; max-width: 100%; max-height: 70vh; overflow: auto; margin: 0; padding: 12px; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--surface); color: var(--text); }
-.dir-picker { position: absolute; right: 10px; top: 40px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.12); z-index: 20; width: min(460px, 90%); max-height: 400px; overflow: auto; transform-origin: top right; transition: opacity 150ms cubic-bezier(0.23, 1, 0.32, 1), transform 150ms cubic-bezier(0.23, 1, 0.32, 1); }
+.preview-body pre { width: 100%; max-width: 100%; max-height: 70vh; overflow: auto; margin: 0; padding: 12px; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: transparent; color: var(--text); }
+.dir-picker { position: absolute; right: 10px; top: 40px; background: var(--panel); border: 0; border-radius: var(--radius-xl); box-shadow: var(--shadow-panel); z-index: 20; width: min(460px, 90%); max-height: 400px; overflow: auto; transform-origin: top right; transition: opacity 150ms cubic-bezier(0.23, 1, 0.32, 1), transform 150ms cubic-bezier(0.23, 1, 0.32, 1); }
 @starting-style { .dir-picker { opacity: 0; transform: scale(0.96); } }
 .dir-picker-row { border-bottom: 1px solid var(--line); padding: 10px 12px; }
 .dir-picker-row:last-child { border-bottom: 0; }
-.dir-picker-path { font-size: 11px; color: var(--text); word-break: break-all; margin-bottom: 3px; line-height: 1.4; }
-.dir-picker-impact { font-size: 10px; color: var(--muted); margin-bottom: 8px; }
+.dir-picker-path { font-size: 12px; color: var(--text); word-break: break-all; margin-bottom: 3px; line-height: 1.4; }
+.dir-picker-impact { font-size: 11px; color: var(--muted); margin-bottom: 8px; }
 .dir-picker-btns { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
-.dir-picker button { padding: 3px 8px; font-size: 10px; font-weight: 600; }
+.dir-picker button { padding: 3px 8px; font-size: 12px; font-weight: var(--weight-control); }
 .folder-rules-modal { gap: 12px; width: min(920px, 100%); max-height: 90vh; }
 .folder-rules-active, .folder-rules-preview { display: grid; gap: 6px; font-size: 12px; }
 .folder-rules-help { color: var(--muted); }
-.folder-rule-chip { display: flex; gap: 8px; align-items: center; justify-content: space-between; border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; background: var(--surface); }
+.folder-rule-chip { display: flex; gap: 8px; align-items: center; justify-content: space-between; border: 1px solid var(--line); border-radius: var(--radius); padding: 6px 8px; background: var(--surface); }
 .folder-rule-chip-main { display: flex; gap: 6px; align-items: center; min-width: 0; }
-.rule-pill { border-radius: 999px; padding: 1px 6px; font-size: 10px; font-weight: 700; letter-spacing: .04em; }
+.rule-pill { border-radius: 999px; padding: 1px 6px; font-size: 11px; font-weight: var(--weight-semibold); letter-spacing: .04em; }
 .rule-pill.keep { background: var(--keep-bg); color: var(--keep); }
 .rule-pill.trash { background: var(--danger-bg); color: var(--danger); }
 .rule-pill.scope { background: var(--panel); color: var(--muted); border: 1px solid var(--line); }
 .folder-rule-chip-path { color: var(--muted); word-break: break-all; }
 .folder-rule-chip button { padding: 2px 7px; font-size: 11px; }
-.folder-rules-preview { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: var(--surface); color: var(--muted); }
+.folder-rules-preview { border: 1px solid var(--line); border-radius: var(--radius-xl); padding: 10px; background: var(--surface); color: var(--muted); }
 .folder-rules-preview b { color: var(--text); }
 .folder-rules-preview-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px; }
 .folder-rules-metric { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
@@ -1749,7 +1758,7 @@ button.danger-action { background: var(--danger); border-color: var(--danger); c
 .folder-rules-metric .keep { color: var(--keep); font-weight: 700; }
 .folder-rules-warning { color: var(--danger); font-size: 11px; }
 .folder-rules-preview-list { display: grid; gap: 3px; font-size: 11px; }
-.folder-rules-list { display: grid; gap: 6px; max-height: 360px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+.folder-rules-list { display: grid; gap: 6px; max-height: 360px; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius-xl); padding: 8px; }
 .folder-rule-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; border-bottom: 1px solid var(--line); padding: 7px 0; }
 .folder-rule-row:last-child { border-bottom: 0; }
 .folder-rule-name { color: var(--text); font-size: 12px; font-weight: 600; word-break: break-all; }
@@ -1765,9 +1774,9 @@ button.danger-action { background: var(--danger); border-color: var(--danger); c
 #previewPane { width: 420px; min-width: 200px; border-left: 0; background: var(--panel); display: flex; flex-direction: column; overflow: hidden; flex-shrink: 0; }
 body:not(.pane-open) #previewPane { display: none; }
 body:not(.pane-open) .pane-resizer { display: none; }
-.pane-resizer { flex: 0 0 5px; background: var(--line); cursor: col-resize; position: relative; flex-shrink: 0; transition: background .15s; }
-.pane-resizer:hover, .pane-resizer.is-dragging { background: var(--muted); }
-.pane-resizer:focus-visible { background: var(--text); outline: none; }
+.pane-resizer { flex: 0 0 1px; background: var(--border-strong); cursor: col-resize; position: relative; flex-shrink: 0; transition: background .15s; }
+.pane-resizer:hover, .pane-resizer.is-dragging { background: var(--text-muted); }
+.pane-resizer:focus-visible { background: var(--text); box-shadow: 0 0 0 1px var(--text); outline: none; }
 .pane-resizer::before { content: ''; position: absolute; top: 0; bottom: 0; left: -6px; right: -6px; cursor: col-resize; }
 .pane-placeholder { display: flex; flex-direction: column; align-items: center; justify-content: center; flex: 1; color: var(--muted); text-align: center; font-size: 13px; gap: 8px; padding: 24px; }
 .pane-preview-area { flex: 1; min-height: 0; min-width: 0; display: flex; align-items: center; justify-content: center; background: var(--surface); position: relative; overflow: hidden; border-bottom: 1px solid var(--line); }
@@ -1785,15 +1794,15 @@ body:not(.pane-open) .pane-resizer { display: none; }
 .pane-meta-row { display: flex; gap: 6px; margin-bottom: 4px; min-width: 0; }
 .pane-meta-label { color: var(--muted); flex: 0 0 76px; font-size: 11px; padding-top: 1px; }
 .pane-meta-value { color: var(--text); word-break: break-all; flex: 1; min-width: 0; line-height: 1.4; }
-.pane-meta-section { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 10px 0 5px; }
+.pane-meta-section { font-size: 11px; font-weight: var(--weight-semibold); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 10px 0 5px; }
 /* ── Active group / file highlighting ────────────────── */
 .group.is-active { background: var(--surface); }
-.group.is-active > .group-head { background: var(--line); }
-.file.is-pane-active { background: var(--surface); }
+.group.is-active > .group-head { background: var(--tint-selected); }
+.file.is-pane-active { background: var(--tint-selected); }
 .file.is-pane-active::after { content: ''; position: absolute; inset: 0; border: 2px solid var(--text); border-radius: 7px; pointer-events: none; z-index: 10; }
 body.list-view .file.is-pane-active::after { border-width: 0 0 0 3px; border-radius: 0; }
 /* ── List view ───────────────────────────────────────── */
-#listViewHeader { display: none; position: sticky; top: 0; z-index: 5; background: var(--surface); border-bottom: 2px solid var(--line); font-size: 11px; font-weight: 600; color: var(--muted); flex-shrink: 0; }
+#listViewHeader { display: none; position: sticky; top: 0; z-index: 5; background: linear-gradient(var(--surface), var(--surface)), var(--panel); border-bottom: 1px solid var(--border-strong); font-size: 12px; font-weight: var(--weight-semibold); color: var(--muted); flex-shrink: 0; }
 body.list-view #listViewHeader { display: flex; }
 .lv-col { padding: 6px 8px; cursor: pointer; user-select: none; display: flex; align-items: center; gap: 3px; white-space: nowrap; border-right: 1px solid var(--line); }
 .lv-col:last-child { border-right: 0; cursor: default; }
@@ -1804,7 +1813,7 @@ body.list-view #listViewHeader { display: flex; }
 .lv-col-dir { flex: 2; min-width: 80px; }
 .lv-col-size { flex: 0 0 76px; }
 .lv-col-reason { flex: 1; min-width: 60px; cursor: default; }
-.lv-col-actions { flex: 0 0 130px; }
+.lv-col-actions { flex: 0 0 150px; }
 body.list-view .content { padding: 0; }
 body.list-view .group { border-radius: 0; border-left: 0; border-right: 0; border-top: 0; margin-bottom: 0; min-height: 0; }
 body.list-view .group + .group { border-top: 1px solid var(--line); }
@@ -1814,19 +1823,19 @@ body.list-view .file:first-child { border-top: 0; }
 body.list-view .thumb { display: none; }
 body.list-view .reveal-btn { display: none; }
 body.list-view .meta { flex-direction: row; padding: 0; gap: 0; flex: 1; align-items: center; overflow: hidden; min-height: 40px; }
-body.list-view .file-type-badge { flex: 0 0 52px; display: flex; align-items: center; justify-content: center; font-size: 10px; color: var(--muted); font-weight: 700; letter-spacing: .03em; border-right: 1px solid var(--line); height: 100%; }
+body.list-view .file-type-badge { flex: 0 0 52px; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--muted); font-weight: 700; letter-spacing: .03em; border-right: 1px solid var(--line); height: 100%; }
 body.list-view .name { flex: 2; min-width: 100px; padding: 0 8px; -webkit-line-clamp: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
 body.list-view .path { flex: 2; min-width: 80px; padding: 0 8px; -webkit-line-clamp: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; font-size: 11px; }
 body.list-view .badges { display: none; }
 body.list-view .file-size-lv { flex: 0 0 76px; font-size: 11px; color: var(--muted); padding: 0 8px; white-space: nowrap; display: flex; align-items: center; border-right: 1px solid var(--line); height: 100%; }
-body.list-view .choice { border-top: 0; border-left: 1px solid var(--line); flex: 0 0 130px; height: 40px; margin-top: 0; }
+body.list-view .choice { grid-template-columns: 36px 1fr 1fr; border-top: 0; border-left: 1px solid var(--line); flex: 0 0 150px; height: 40px; margin-top: 0; }
 .lv-preview-btn { display: none; }
 body.list-view .lv-preview-btn { display: flex; align-items: center; justify-content: center; font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: -.5px; border: 0; border-radius: 0; border-right: 1px solid var(--line); width: 36px; flex-shrink: 0; background: transparent; color: var(--muted); padding: 0; cursor: pointer; height: 100%; }
-body.list-view .lv-preview-btn:hover { color: var(--text); background: var(--surface); }
+body.list-view .lv-preview-btn:hover { color: var(--text); background: var(--tint-hover); }
 .file-type-badge { display: none; }
 .file-size-lv { display: none; }
 .file-reason { display: none; }
-body.list-view .file-reason { flex: 1; min-width: 60px; font-size: 10px; color: var(--muted); padding: 0 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; border-right: 1px solid var(--line); height: 100%; font-style: italic; }
+body.list-view .file-reason { flex: 1; min-width: 60px; font-size: 11px; color: var(--muted); padding: 0 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; border-right: 1px solid var(--line); height: 100%; font-style: italic; }
 /* ── Compact modal ───────────────────────────────────── */
 .modal.wide { width: min(600px, 100%); max-height: 80vh; }
 .preview-modal { width: min(900px, 100%); max-height: 90vh; }
@@ -1856,6 +1865,7 @@ body.list-view .file-reason { flex: 1; min-width: 60px; font-size: 10px; color: 
   <button id="folderRules">Folder rules…</button>
   <button id="undo" disabled>Undo</button>
   <div class="header-actions">
+    <span id="submitError" class="submit-error" role="alert"></span>
     <button id="cancel">Cancel</button>
     <button id="finish" class="primary">Move to Trash</button>
   </div>
@@ -1895,6 +1905,7 @@ body.list-view .file-reason { flex: 1; min-width: 60px; font-size: 10px; color: 
     <p>This moves marked duplicates to the Trash/Recycle Bin after one final safety check.</p>
     <div id="confirmFolders" class="confirm-folders"></div>
     <div id="confirmPaths" class="confirm-list"></div>
+    <p id="confirmError" class="submit-error" role="alert"></p>
     <div class="modal-actions">
       <button id="confirmBack">Review again</button>
       <button id="confirmMove" class="danger-action">Move to trash</button>
@@ -1956,6 +1967,10 @@ const trash = new Set();
 const manualChoices = new Set();
 const undoStack = [];
 const MAX_UNDO_STEPS = 20;
+const CANCEL_GRACE_MS = 5000;
+const THUMB_CLICK_SELECTS = true;
+let cancelTimer = null;
+let closeDirPicker = null;
 let trashedOnly = false;
 let isSubmitting = false;
 let sessionId = null;
@@ -2032,6 +2047,9 @@ function findFile(fileId) {
 }
 function findCard(fileId) {
   return Array.from(document.querySelectorAll("[data-file-id]")).find(card => card.dataset.fileId === fileId);
+}
+function isModalOverlayOpen() {
+  return $("confirmOverlay").classList.contains("is-open") || $("folderRulesOverlay").classList.contains("is-open");
 }
 function isTextInputTarget(target) {
   return target && typeof target.closest === "function" && (target.closest("input, textarea, select, video, audio") || target.isContentEditable);
@@ -2204,8 +2222,7 @@ function openFolderRules() {
   $("folderRulesOverlay").classList.add("is-open");
   $("folderRulesSearch").focus();
 }
-function closeFolderRules(force = false) {
-  if (!force && folderRulesDirty && !window.confirm("Close with unapplied folder rule changes? Rules will stay in this review session.")) return;
+function closeFolderRules() {
   $("folderRulesOverlay").classList.remove("is-open");
 }
 function applyFolderRules() {
@@ -2216,7 +2233,7 @@ function applyFolderRules() {
   replaceMap(folderRuleReasons, Array.from(preview.nextFolderRuleReasons.entries()));
   folderRulesDirty = false;
   updateFolderRulesButton();
-  closeFolderRules(true);
+  closeFolderRules();
   refreshSelectionUi(preview.changedIds);
 }
 function replaceSet(target, values) {
@@ -2261,6 +2278,7 @@ function updateUndoButton() {
   const last = undoStack[undoStack.length - 1];
   button.disabled = !last;
   button.textContent = last ? `Undo ${last.label}` : "Undo";
+  button.title = button.textContent;
 }
 function setManual(ids) {
   ids.forEach((id) => {
@@ -2322,7 +2340,8 @@ function clearFilters() {
 }
 function mark(fileId, shouldTrash) {
   if (trash.has(fileId) === shouldTrash) return;
-  recordUndo("last change");
+  const file = findFile(fileId);
+  recordUndo(`${shouldTrash ? "trash" : "keep"} ${file ? file.name : "file"}`);
   if (shouldTrash) trash.add(fileId); else trash.delete(fileId);
   manualChoices.add(fileId);
   folderRuleReasons.delete(fileId);
@@ -2360,8 +2379,9 @@ function applyMarkGroup(baseTrash, group, mode, dirPath, global = false) {
   });
   return nextTrash;
 }
+const GROUP_UNDO_LABELS = { "trash":"Trash copies", "oldest":"Keep oldest", "none":"Keep all", "default":"defaults", "keepDir":"Keep this folder", "byDirKeep":"Keep only this folder", "byDirTrash":"Trash this folder" };
 function markGroup(group, mode, dirPath, global = false) {
-  recordUndo("bulk change");
+  recordUndo(mode === "byDirTrash" && global ? "Trash this folder everywhere" : (GROUP_UNDO_LABELS[mode] || "bulk change"));
   const before = new Set(trash);
   const nextTrash = applyMarkGroup(before, group, mode, dirPath, global);
   replaceSet(trash, Array.from(nextTrash));
@@ -2377,8 +2397,10 @@ function folderActionImpact(group, mode, dirPath, global = false) {
 }
 function showDirPicker(group, event) {
   event.stopPropagation();
+  if (closeDirPicker) closeDirPicker(false);
   const existing = document.querySelector(".dir-picker");
   if (existing) existing.remove();
+  const opener = event.target.closest("button");
   const dirs = [...new Set(group.files.map((f) => f.directory))].sort();
   const picker = document.createElement("div");
   picker.className = "dir-picker";
@@ -2398,7 +2420,7 @@ function showDirPicker(group, event) {
       button.textContent = label;
       button.title = folderActionImpact(group, mode, dir, global);
       button.className = className;
-      button.onclick = (e) => { e.stopPropagation(); markGroup(group, mode, dir, global); picker.remove(); };
+      button.onclick = (e) => { e.stopPropagation(); markGroup(group, mode, dir, global); close(true); };
       btns.appendChild(button);
     });
     row.appendChild(path);
@@ -2407,8 +2429,27 @@ function showDirPicker(group, event) {
     picker.appendChild(row);
   });
   event.target.closest(".group").appendChild(picker);
-  const hide = (e) => { if (!picker.contains(e.target)) { picker.remove(); document.removeEventListener("click", hide); } };
-  setTimeout(() => document.addEventListener("click", hide), 10);
+  let armTimer = null;
+  const onDocClick = (e) => { if (!picker.contains(e.target)) close(false); };
+  const onPickerKey = (e) => {
+    if (e.key !== "Escape") return;
+    e.preventDefault();
+    e.stopPropagation();
+    close(true);
+  };
+  function close(restoreFocus) {
+    clearTimeout(armTimer);
+    document.removeEventListener("click", onDocClick);
+    document.removeEventListener("keydown", onPickerKey, true);
+    picker.remove();
+    if (closeDirPicker === close) closeDirPicker = null;
+    if (restoreFocus && opener && document.contains(opener)) opener.focus();
+  }
+  closeDirPicker = close;
+  document.addEventListener("keydown", onPickerKey, true);
+  armTimer = setTimeout(() => document.addEventListener("click", onDocClick), 10);
+  const firstButton = picker.querySelector("button");
+  if (firstButton) firstButton.focus();
 }
 function getGroupVideoThumbs(groupEl) {
   return Array.from(groupEl.querySelectorAll("img[data-video-thumb='1']"));
@@ -2567,6 +2608,7 @@ function initPaneResizer() {
     resizer.classList.add("is-dragging");
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
+    const pointerId = e.pointerId;
     const startX = e.clientX;
     const startWidth = pane.offsetWidth;
     const maxWidth = mainArea.getBoundingClientRect().width * 0.75;
@@ -2579,19 +2621,33 @@ function initPaneResizer() {
         requestAnimationFrame(() => { rafPending = false; applyPaneImageQuality(); });
       }
     };
-    const onUp = () => {
+    const endDrag = (save) => {
       resizer.classList.remove("is-dragging");
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
-      const w = pane.offsetWidth;
-      if (w > 0) try { localStorage.setItem("dedupPaneWidth", w); } catch {}
+      if (save) {
+        const w = pane.offsetWidth;
+        if (w > 0) try { localStorage.setItem("dedupPaneWidth", w); } catch {}
+      }
       resizer.removeEventListener("pointermove", onMove);
       resizer.removeEventListener("pointerup", onUp);
       resizer.removeEventListener("pointercancel", onUp);
+      document.removeEventListener("keydown", onDragKey, true);
+    };
+    const onUp = () => endDrag(true);
+    const onDragKey = (ev) => {
+      if (ev.key !== "Escape") return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      pane.style.width = startWidth + "px";
+      applyPaneImageQuality();
+      try { resizer.releasePointerCapture(pointerId); } catch {}
+      endDrag(false);
     };
     resizer.addEventListener("pointermove", onMove);
     resizer.addEventListener("pointerup", onUp);
     resizer.addEventListener("pointercancel", onUp);
+    document.addEventListener("keydown", onDragKey, true);
   });
   resizer.addEventListener("keydown", (e) => {
     if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
@@ -2761,7 +2817,7 @@ function renderPanePreview(file) {
   } else if (file.previewKind === "pdf") {
     area.innerHTML = `<iframe src="${authUrl(`/pdf/${urlId(file.id)}`)}#page=1&toolbar=0&navpanes=0" title="PDF preview"></iframe>`;
   } else if (file.previewKind === "text") {
-    area.innerHTML = `<pre style="width:100%;height:100%;padding:10px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;font:11px/1.4 ui-monospace,monospace;margin:0;background:var(--surface);color:var(--text)" data-pane-text="${esc(file.id)}">Loading...</pre>`;
+    area.innerHTML = `<pre style="width:100%;height:100%;padding:10px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;font:11px/1.4 ui-monospace,monospace;margin:0;background:transparent;color:var(--text)" data-pane-text="${esc(file.id)}">Loading...</pre>`;
     hydratePaneText(file.id, area.querySelector("[data-pane-text]"));
   } else {
     area.innerHTML = `<div style="padding:24px;color:var(--muted);text-align:center;font-size:12px;word-break:break-all">${esc(file.name)}</div>`;
@@ -3027,8 +3083,8 @@ function renderGroupContent(el, group) {
     const typeLabel = {"image":"IMG","video":"VID","audio":"AUD","pdf":"PDF","text":"TXT"}[file.previewKind] || "—";
     const reasonText = selectionReasonForFile(file, isTrash);
     return `<article class="file ${isTrash ? 'is-trash' : 'is-keep'}" data-file-id="${esc(file.id)}">
-      <button class="reveal-btn" data-action="reveal" title="Reveal ${esc(file.name)} in Finder/Explorer" aria-label="Reveal ${esc(file.name)} in Finder/Explorer">Open</button>
-      <div class="thumb" role="button" tabindex="0" data-action="preview" data-group-id="${esc(group.id)}">${mediaHtml(file)}</div>
+      <button class="reveal-btn" data-action="reveal" title="Reveal ${esc(file.name)} in Finder/Explorer" aria-label="Reveal ${esc(file.name)} in Finder/Explorer">Reveal</button>
+      <div class="thumb" role="button" tabindex="0" title="Preview (double-click or Enter)" data-action="preview" data-group-id="${esc(group.id)}">${mediaHtml(file)}</div>
       <div class="meta"><div class="file-type-badge">${esc(typeLabel)}</div><div class="name" title="${esc(file.name)}">${esc(file.name)}</div><div class="path" title="${esc(file.path)}">${esc(file.directory)}</div><div class="badges">${fileBadgesHtml(file, isTrash)}</div><div class="file-size-lv">${esc(file.sizeLabel)}</div><div class="file-reason">${esc(reasonText)}</div><div class="choice"><button class="lv-preview-btn" data-action="preview" data-group-id="${esc(group.id)}" title="Preview">(o)</button><button class="${!isTrash ? 'active keep' : 'keep'}" data-mark="keep" title="Keep (K)">Keep</button><button class="${isTrash ? 'active trash' : 'trash'}" data-mark="trash" title="Trash (T)">Trash</button></div></div>
     </article>`;
   }).join("");
@@ -3068,7 +3124,8 @@ function handleGroupsClick(event) {
   }
 
   const previewTarget = target.closest("[data-action='preview']");
-  if (previewTarget && root.contains(previewTarget)) {
+  const thumbSelects = THUMB_CLICK_SELECTS && paneOpen && !listViewMode;
+  if (previewTarget && root.contains(previewTarget) && !(thumbSelects && previewTarget.classList.contains("thumb"))) {
     event.stopPropagation();
     const card = previewTarget.closest("[data-file-id]");
     if (card) openPreview(card.dataset.fileId, previewTarget.dataset.groupId, event);
@@ -3126,6 +3183,15 @@ function markKey(event) {
   }
   return false;
 }
+function handleGroupsDblClick(event) {
+  if (!(THUMB_CLICK_SELECTS && paneOpen && !listViewMode)) return;
+  const previewTarget = event.target.closest("[data-action='preview']");
+  if (!previewTarget || !event.currentTarget.contains(previewTarget)) return;
+  const card = previewTarget.closest("[data-file-id]");
+  if (!card) return;
+  if ($("previewOverlay").classList.contains("is-open") && previewContext && previewContext.fileId === card.dataset.fileId) return;
+  openPreview(card.dataset.fileId, previewTarget.dataset.groupId, event);
+}
 function handleGroupsKeydown(event) {
   if (event.key !== "Enter" && event.key !== " ") return;
   const previewTarget = event.target.closest("[data-action='preview']");
@@ -3134,6 +3200,10 @@ function handleGroupsKeydown(event) {
   const card = previewTarget.closest("[data-file-id]");
   if (card) openPreview(card.dataset.fileId, previewTarget.dataset.groupId, event);
 }
+function updateFinishButton(count) {
+  if (isSubmitting) return;
+  $("finish").textContent = count > 0 ? `Move ${count} to Trash` : "Finish";
+}
 function updateStats(filters = getFilters()) {
   const totalGroups = allData.groups.length;
   const visibleFiles = renderGroups.reduce((sum, g) => sum + (g._visibleFiles || []).length, 0);
@@ -3141,6 +3211,7 @@ function updateStats(filters = getFilters()) {
   $("groupCount").textContent = `${renderGroups.length} / ${totalGroups}`;
   $("fileCount").textContent = `${visibleFiles} / ${totalFileCount}`;
   $("trashCount").textContent = trashSummary.count;
+  updateFinishButton(trashSummary.count);
   $("reclaimSize").textContent = formatSize(trashSummary.bytes);
   updateFilterHint(filters);
   renderFolderSummary(filters);
@@ -3180,12 +3251,44 @@ function renderFolderSummary(filters = getFilters()) {
     return `<button class="folder-row${active ? ' is-active' : ''}" data-directory="${esc(row.directory)}" onclick="focusFolderFromButton(this)" title="${active ? 'Click to clear filter' : esc(row.directory)}"><b>${esc(row.directory)}</b><span>${row.marked} of ${row.visible} · ${formatSize(row.bytes)}${active ? '<span class="folder-clear" aria-label="clear"> ×</span>' : ''}</span></button>`;
   }).join("");
 }
+function stopCancelCountdown() {
+  if (!cancelTimer) return false;
+  clearInterval(cancelTimer);
+  cancelTimer = null;
+  const button = $("cancel");
+  button.classList.remove("is-pending");
+  button.textContent = "Cancel";
+  return true;
+}
+function requestCancel() {
+  if (stopCancelCountdown() || isSubmitting) return;
+  if (CANCEL_GRACE_MS <= 0 || undoStack.length === 0) {
+    submitSelection(true);
+    return;
+  }
+  const button = $("cancel");
+  let remaining = Math.ceil(CANCEL_GRACE_MS / 1000);
+  const label = () => `Keep reviewing · ${remaining}s`;
+  button.classList.add("is-pending");
+  button.textContent = label();
+  cancelTimer = setInterval(() => {
+    remaining -= 1;
+    if (remaining > 0) {
+      button.textContent = label();
+      return;
+    }
+    stopCancelCountdown();
+    submitSelection(true);
+  }, 1000);
+}
 function showMoveConfirmation() {
+  stopCancelCountdown();
   const summary = getTrashDetails();
   if (!requireMoveConfirmation || summary.count === 0) {
     submitSelection(false);
     return;
   }
+  $("confirmMove").textContent = `Move ${summary.count} to Trash`;
   $("confirmSummary").textContent = `${summary.count} file(s), ${formatSize(summary.bytes)} reclaimable across ${summary.folders.length} folder(s).`;
   $("confirmFolders").innerHTML = summary.folders.slice(0, 5).map(folder => `<div><b>${esc(folder.directory)}</b>: ${folder.count} file(s), ${formatSize(folder.bytes)}</div>`).join("");
   $("confirmPaths").innerHTML = summary.files.map(file => `<div>${esc(file.path)}</div>`).join("");
@@ -3257,11 +3360,12 @@ function restoreFromLocalStorage() {
 async function submitSelection(cancelled) {
   if (isSubmitting) return;
   isSubmitting = true;
+  $("submitError").textContent = "";
+  $("confirmError").textContent = "";
   const finishButton = $("finish");
   const cancelButton = $("cancel");
   const confirmMoveButton = $("confirmMove");
   const confirmBackButton = $("confirmBack");
-  const finishText = finishButton.textContent;
   const cancelText = cancelButton.textContent;
   const confirmMoveText = confirmMoveButton.textContent;
   finishButton.disabled = true;
@@ -3285,10 +3389,12 @@ async function submitSelection(cancelled) {
     cancelButton.disabled = false;
     confirmMoveButton.disabled = false;
     confirmBackButton.disabled = false;
-    finishButton.textContent = finishText;
+    updateFinishButton(getTrashDetails().count);
     cancelButton.textContent = cancelText;
     confirmMoveButton.textContent = confirmMoveText;
-    alert("Failed to submit selection: " + err.message);
+    const message = `Could not submit: ${err.message}`;
+    $("submitError").textContent = message;
+    $("confirmError").textContent = message;
   }
 }
 function appendClientIndexes(groups) {
@@ -3402,14 +3508,15 @@ async function init() {
   $("collapseClean").addEventListener("click", () => { setTrashedOnly(!trashedOnly); render(); });
   $("undo").addEventListener("click", undoLastAction);
   $("finish").addEventListener("click", showMoveConfirmation);
-  $("cancel").addEventListener("click", () => submitSelection(true));
+  $("cancel").addEventListener("click", requestCancel);
   $("groups").addEventListener("click", handleGroupsClick);
   $("groups").addEventListener("keydown", handleGroupsKeydown);
+  $("groups").addEventListener("dblclick", handleGroupsDblClick);
   $("confirmMove").addEventListener("click", () => submitSelection(false));
   $("confirmBack").addEventListener("click", hideMoveConfirmation);
   $("confirmOverlay").addEventListener("click", (event) => { if (event.target.id === "confirmOverlay") hideMoveConfirmation(); });
   $("previewClose").addEventListener("click", () => closePreview());
-  $("previewOverlay").addEventListener("click", (event) => { if (event.target.id === "previewOverlay") closePreview(); });
+  $("previewOverlay").addEventListener("click", (event) => { if (event.target.id === "previewOverlay" && event.detail < 2) closePreview(); });
   $("previewPrev").addEventListener("click", () => navigatePreview(-1));
   $("previewNext").addEventListener("click", () => navigatePreview(1));
   $("previewKeep").addEventListener("click", () => { if (previewContext) { mark(previewContext.fileId, false); } });
@@ -3417,9 +3524,25 @@ async function init() {
   $("previewKeep2").addEventListener("click", () => { if (previewContext) { mark(previewContext.fileId, false); } });
   $("previewTrash2").addEventListener("click", () => { if (previewContext) { mark(previewContext.fileId, true); } });
   document.addEventListener("keydown", (event) => {
+    if ((event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "z") {
+      if (!isSubmitting && undoStack.length && !isTextInputTarget(event.target) && !isModalOverlayOpen()) {
+        event.preventDefault();
+        undoLastAction();
+      }
+      return;
+    }
     if (markKey(event)) return;
+    if (event.key === "Enter" && !event.defaultPrevented && !event.repeat && !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      const interactive = event.target && typeof event.target.closest === "function" && event.target.closest('button, a, input, textarea, select, [role="button"], video, audio');
+      if (activeFileId && activeGroupId && !isSubmitting && !interactive && !isModalOverlayOpen() && !$("previewOverlay").classList.contains("is-open")) {
+        event.preventDefault();
+        openPreview(activeFileId, activeGroupId);
+        return;
+      }
+    }
     if (event.key === "Escape") {
-      if ($("previewOverlay").classList.contains("is-open")) closePreview();
+      if (cancelTimer && !$("previewOverlay").classList.contains("is-open") && !isModalOverlayOpen()) stopCancelCountdown();
+      else if ($("previewOverlay").classList.contains("is-open")) closePreview();
       else if ($("folderRulesOverlay").classList.contains("is-open")) closeFolderRules();
       else if ($("confirmOverlay").classList.contains("is-open")) hideMoveConfirmation();
     }
@@ -3934,35 +4057,38 @@ def build_empty_dirs_html():
 + _SHARED_CSS
 + """
 /* ── page-specific ─────────────────────────────────── */
-body { margin: 0; font: 13px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; }
-header { position: sticky; top: 0; z-index: 10; display: flex; gap: 12px; align-items: center; justify-content: space-between; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
-h1 { margin: 0; font-size: 15px; }
+body { margin: 0; font: 14px/20px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; }
+header { position: sticky; top: 0; z-index: 10; display: flex; gap: 12px; align-items: center; justify-content: space-between; padding: 8px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+h1 { margin: 0; font-size: 16px; font-weight: var(--weight-header); }
 .toolbar { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 button.danger-outline { color: var(--danger); border-color: var(--danger-border); background: var(--danger-bg); }
 .content { max-width: 960px; margin: 0 auto; padding: 16px; width: 100%; }
-.summary { margin-bottom: 12px; color: var(--muted); font-size: 12px; }
+.summary { margin-bottom: 12px; color: var(--muted); font-size: 13px; }
 .tree-list { display: grid; gap: 8px; }
-.tree-group { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.tree-group { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-xl); overflow: hidden; }
 .root-row { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; cursor: pointer; user-select: none; }
-.root-row:hover { background: var(--surface); }
+.root-row:hover { background: var(--tint-hover); }
 .root-row.sel { background: var(--danger-bg); }
 .root-row input[type=checkbox] { margin-top: 2px; flex-shrink: 0; accent-color: var(--danger); width: 15px; height: 15px; cursor: pointer; }
 .node-info { min-width: 0; flex: 1; }
-.node-name { font-weight: 600; font-size: 13px; word-break: break-all; }
+.node-name { font-weight: var(--weight-semibold); font-size: 14px; word-break: break-all; }
 .node-full-path { font-size: 11px; color: var(--muted); word-break: break-all; margin-top: 2px; }
-.node-badge { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 999px; background: var(--surface); color: var(--muted); margin-left: 6px; vertical-align: middle; font-weight: 400; }
+.node-badge { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 999px; background: var(--surface); color: var(--muted); margin-left: 6px; vertical-align: middle; font-weight: 400; }
 .children-block { border-top: 1px solid var(--line); background: var(--bg); }
 .child-row { display: flex; align-items: center; gap: 8px; padding: 6px 12px; cursor: pointer; user-select: none; border-left: 3px solid transparent; }
-.child-row:hover { background: var(--surface); }
+.child-row:hover { background: var(--tint-hover); }
 .child-row.sel { background: var(--danger-bg); border-left-color: var(--danger-border); }
 .child-row input[type=checkbox] { flex-shrink: 0; accent-color: var(--danger); width: 14px; height: 14px; cursor: pointer; }
-.child-indent { flex-shrink: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--line); white-space: pre; line-height: 1; }
-.child-name { font-size: 12px; font-weight: 500; word-break: break-all; }
+.child-indent { flex-shrink: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--text-muted); white-space: pre; line-height: 1; }
+.child-name { font-size: 13px; font-weight: 500; word-break: break-all; }
 .empty-state { padding: 40px 20px; text-align: center; color: var(--muted); }
-.modal { width: min(520px, 100%); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 20px 60px rgba(0,0,0,.18); padding: 20px; display: grid; gap: 14px; }
-.confirm-list { max-height: 220px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; padding: 8px; background: var(--surface); font-size: 11px; color: var(--muted); }
+.modal { width: min(520px, 100%); background: var(--panel); border: 0; border-radius: var(--radius-composer); box-shadow: var(--shadow-panel); padding: 20px; display: grid; gap: 14px; }
+.confirm-list { max-height: 220px; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius); padding: 8px; background: var(--surface); font-size: 11px; color: var(--muted); }
 .confirm-list div { word-break: break-all; margin-bottom: 4px; }
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+.submit-error { margin: 0; color: var(--danger); font-size: 13px; }
+.modal p.submit-error { color: var(--danger); }
+.submit-error:empty, #confirmNote:empty { display: none; }
 </style>
 </head>
 <body>
@@ -3971,7 +4097,8 @@ button.danger-outline { color: var(--danger); border-color: var(--danger-border)
   <div class="toolbar">
     <button onclick="selectAll()">Select All</button>
     <button onclick="selectNone()">Select None</button>
-    <button class="danger-outline" id="confirmBtn" onclick="openConfirm()" disabled>Delete Selected</button>
+    <p id="postError" class="submit-error" role="alert"></p>
+    <button class="danger-outline" id="confirmBtn" onclick="openConfirm()" disabled>Move to Trash</button>
     <button onclick="cancel()">Cancel</button>
   </div>
 </header>
@@ -3982,12 +4109,13 @@ button.danger-outline { color: var(--danger); border-color: var(--danger-border)
 
 <div class="modal-backdrop" id="confirmModal">
   <div class="modal">
-    <h2>Confirm Deletion</h2>
+    <h2 id="confirmTitle">Move to Trash?</h2>
     <p id="confirmNote"></p>
     <div class="confirm-list" id="confirmList"></div>
+    <p id="confirmPostError" class="submit-error" role="alert"></p>
     <div class="modal-actions">
-      <button onclick="closeConfirm()">Back</button>
-      <button class="primary" style="background:var(--danger);border-color:var(--danger)" onclick="doConfirm()">Move to Trash</button>
+      <button id="confirmBack" onclick="closeConfirm()">Back</button>
+      <button id="confirmMove" class="primary" style="background:var(--danger);border-color:var(--danger)" onclick="doConfirm()">Move to Trash</button>
     </div>
   </div>
 </div>
@@ -4108,7 +4236,9 @@ function render() {
     : n + ' selected';
   if (n > 0 && eff < n) summary += ` · ${eff} will be trashed (${n - eff} covered by a selected parent)`;
   document.getElementById('summary').textContent = summary;
-  document.getElementById('confirmBtn').disabled = n === 0;
+  const confirmBtn = document.getElementById('confirmBtn');
+  confirmBtn.disabled = n === 0;
+  confirmBtn.textContent = eff > 0 ? `Move ${eff} to Trash` : 'Move to Trash';
 }
 
 // ── Selection ───────────────────────────────────────────────────────────────
@@ -4134,15 +4264,36 @@ function openConfirm() {
   const eff = effectiveSelection();
   const skipped = selected.size - eff.length;
   document.getElementById('confirmNote').textContent = skipped > 0
-    ? `Move ${eff.length} folder${eff.length === 1 ? '' : 's'} to the Trash? (${skipped} covered by parent and omitted.)`
-    : `Move ${eff.length} folder${eff.length === 1 ? '' : 's'} to the Trash?`;
+    ? `${skipped} more covered by a selected parent and omitted.` : '';
   document.getElementById('confirmList').innerHTML = eff.map(p => `<div>${esc(p)}</div>`).join('');
+  document.getElementById('confirmTitle').textContent =
+    `Move ${eff.length} folder${eff.length === 1 ? '' : 's'} to Trash?`;
+  document.getElementById('confirmMove').textContent = `Move ${eff.length} to Trash`;
+  document.getElementById('confirmPostError').textContent = '';
   document.getElementById('confirmModal').classList.add('is-open');
+  document.getElementById('confirmBack').focus();
 }
 
 function closeConfirm() {
   document.getElementById('confirmModal').classList.remove('is-open');
+  document.getElementById('confirmBtn').focus();
 }
+
+function isConfirmOpen() {
+  const modal = document.getElementById('confirmModal');
+  return !!modal && modal.classList.contains('is-open');
+}
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && isConfirmOpen()) {
+    event.preventDefault();
+    closeConfirm();
+  }
+});
+
+document.getElementById('confirmModal').addEventListener('click', (event) => {
+  if (event.target === event.currentTarget) closeConfirm();
+});
 
 function showDone(label) {
   document.body.innerHTML = `<main style="display:flex;align-items:center;justify-content:center;height:100vh;text-align:center;"><div><h1>${label}</h1><p>Returning to terminal...</p><button onclick="window.close()">Close Tab</button></div></main>`;
@@ -4150,6 +4301,8 @@ function showDone(label) {
 }
 
 async function postSelection(body) {
+  document.getElementById('postError').textContent = '';
+  document.getElementById('confirmPostError').textContent = '';
   const buttons = document.querySelectorAll('button');
   buttons.forEach(b => b.disabled = true);
   try {
@@ -4162,14 +4315,19 @@ async function postSelection(body) {
     return true;
   } catch (err) {
     buttons.forEach(b => b.disabled = false);
-    alert('Could not reach the dedup server (' + err.message + '). Check the terminal and try again.');
+    const message = 'Could not reach the dedup server (' + err.message + '). Check the terminal and try again.';
+    document.getElementById('postError').textContent = message;
+    document.getElementById('confirmPostError').textContent = message;
     return false;
   }
 }
 
 async function doConfirm() {
-  closeConfirm();
-  if (await postSelection({selected: effectiveSelection()})) showDone('Done');
+  if (await postSelection({selected: effectiveSelection()})) {
+    showDone('Done');
+  } else if (isConfirmOpen()) {
+    document.getElementById('confirmBack').focus();
+  }
 }
 
 async function cancel() {
