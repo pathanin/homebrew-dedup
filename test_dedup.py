@@ -652,6 +652,52 @@ class BrowserHelperTests(unittest.TestCase):
         self.assertIn("if (undoStack.length > MAX_UNDO_STEPS) undoStack.shift();", html)
         self.assertIn("const snapshot = undoStack.pop();", html)
 
+    def test_list_view_choice_cell_fits_preview_keep_and_trash(self):
+        html = dedup.build_browser_html()
+        self.assertIn("body.list-view .choice { grid-template-columns: 36px 1fr 1fr;", html)
+        self.assertIn(".lv-col-actions { flex: 0 0 150px; }", html)
+        self.assertIn("flex: 0 0 150px; height: 40px; margin-top: 0; }", html)
+
+    def test_interaction_tuning_constants_exist(self):
+        html = dedup.build_browser_html()
+        self.assertIn("const CANCEL_GRACE_MS = 5000;", html)
+        self.assertIn("const THUMB_CLICK_SELECTS = true;", html)
+        self.assertIn("function requestCancel() {", html)
+        self.assertIn("CANCEL_GRACE_MS <= 0 || undoStack.length === 0", html)
+        self.assertIn('$("groups").addEventListener("dblclick", handleGroupsDblClick);', html)
+
+    def test_undo_shortcut_ignores_shift_and_text_inputs(self):
+        html = dedup.build_browser_html()
+        self.assertIn('(event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "z"', html)
+        self.assertIn("!isTextInputTarget(event.target) && !isModalOverlayOpen()", html)
+        self.assertLess(html.index("undoLastAction();\n      }\n      return;"), html.index("if (markKey(event)) return;"))
+        self.assertIn('recordUndo(`${shouldTrash ? "trash" : "keep"} ${file ? file.name : "file"}`);', html)
+        self.assertIn("#undo { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }", html)
+
+    def test_review_page_has_no_native_dialogs(self):
+        html = dedup.build_browser_html()
+        self.assertNotIn("window.confirm", html)
+        self.assertNotIn("alert(", html)
+        self.assertIn('id="submitError"', html)
+        self.assertIn('id="confirmError"', html)
+        self.assertIn(".modal p.submit-error { color: var(--danger); }", html)
+
+    def test_enter_opens_active_file_only_when_nothing_else_handles_it(self):
+        html = dedup.build_browser_html()
+        self.assertIn('event.key === "Enter" && !event.defaultPrevented && !event.repeat', html)
+        self.assertIn('button, a, input, textarea, select, [role="button"], video, audio', html)
+
+    def test_dir_picker_closes_through_one_cleanup_path(self):
+        html = dedup.build_browser_html()
+        self.assertIn('document.removeEventListener("keydown", onPickerKey, true);', html)
+        self.assertIn("clearTimeout(armTimer);", html)
+        self.assertIn("document.contains(opener)", html)
+
+    def test_double_click_on_thumbnail_does_not_close_the_preview_it_opened(self):
+        html = dedup.build_browser_html()
+        self.assertIn('if (event.target.id === "previewOverlay" && event.detail < 2) closePreview();', html)
+        self.assertIn('previewContext.fileId === card.dataset.fileId) return;', html)
+
     def test_motion_respects_reduced_motion(self):
         html = dedup.build_browser_html()
         self.assertNotIn('behavior: "smooth"', html)
@@ -700,6 +746,32 @@ class BrowserHelperTests(unittest.TestCase):
         self.assertIn("postSelection({selected: effectiveSelection()})", html)
         self.assertIn("body: JSON.stringify(body)", html)
         self.assertNotIn("selected: [...selected]", html)
+
+    def test_dark_mode_is_removed_from_both_pages(self):
+        for html in (dedup.build_browser_html(), dedup.build_empty_dirs_html()):
+            self.assertNotIn("prefers-color-scheme: dark", html)
+            self.assertIn("color-scheme: light;", html)
+            self.assertNotIn("color-scheme: light dark", html)
+
+    def test_empty_dirs_html_uses_trash_labels_and_inline_errors(self):
+        html = dedup.build_empty_dirs_html()
+
+        self.assertNotIn("alert(", html)
+        self.assertNotIn("Delete Selected", html)
+        self.assertNotIn("Confirm Deletion", html)
+        self.assertIn("`Move ${eff} to Trash`", html)
+        self.assertIn('id="confirmTitle"', html)
+        self.assertIn('id="confirmMove"', html)
+        self.assertIn('id="postError"', html)
+        self.assertIn('id="confirmPostError"', html)
+
+    def test_empty_dirs_html_modal_closes_on_escape_and_backdrop(self):
+        html = dedup.build_empty_dirs_html()
+
+        self.assertIn("event.key === 'Escape' && isConfirmOpen()", html)
+        self.assertIn("event.target === event.currentTarget", html)
+        self.assertIn("document.getElementById('confirmBack').focus()", html)
+        self.assertIn("document.getElementById('confirmBtn').focus()", html)
 
     def test_browser_selection_keeps_one_file_per_group(self):
         group = dedup.DuplicateGroup(

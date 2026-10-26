@@ -1556,7 +1556,7 @@ def build_reveal_command(path, current_os=CURRENT_OS):
 # Shared across both UI pages. Edit here to change the palette, base rules, or esc().
 _SHARED_CSS = """\
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
   --bg-page: #ffffff;
   --bg-sidebar: #fafafa;
   --bg-raised: #ffffff;
@@ -1590,32 +1590,6 @@ _SHARED_CSS = """\
   --danger: #dc2626;
   --danger-bg: rgba(220,38,38,.07);
   --danger-border: rgba(220,38,38,.35);
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg-page: #161616;
-    --bg-sidebar: #111111;
-    --bg-raised: #1f1f1f;
-    --tint-hover: rgba(255,255,255,.06);
-    --tint-selected: rgba(255,255,255,.12);
-    --tint-track: rgba(255,255,255,.06);
-    --text-primary: rgba(255,255,255,.92);
-    --text-secondary: rgba(255,255,255,.64);
-    --text-muted: rgba(255,255,255,.48);
-    --border: rgba(255,255,255,.10);
-    --border-strong: rgba(255,255,255,.12);
-    --ring-composer: rgba(255,255,255,.14);
-    --shadow-thumb: inset 0 0 0 1px var(--border), 0 1px 2px rgba(0,0,0,.3);
-    --shadow-sm: 0 0 0 1px var(--border), 0 1px 2px rgba(0,0,0,.3), 0 2px 8px rgba(0,0,0,.4);
-    --shadow-panel: 0 0 0 1px var(--border), 0 8px 24px rgba(0,0,0,.5), 0 2px 6px rgba(0,0,0,.35);
-    --surface: rgba(255,255,255,.05);
-    --keep: #22c55e;
-    --keep-bg: rgba(34,197,94,.12);
-    --keep-border: rgba(34,197,94,.40);
-    --danger: #ef4444;
-    --danger-bg: rgba(239,68,68,.12);
-    --danger-border: rgba(239,68,68,.45);
-  }
 }
 * { box-sizing: border-box; }
 button { border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--bg-raised); color: var(--text); padding: 5px 10px; font: inherit; font-weight: var(--weight-control); cursor: pointer; white-space: nowrap; }
@@ -1682,6 +1656,11 @@ button[aria-pressed="true"], button.active-toggle { background: var(--tint-selec
 .header-divider { width: 1px; background: var(--line); align-self: stretch; margin: 0 2px; flex-shrink: 0; }
 .header-actions { display: flex; gap: 6px; align-items: center; margin-left: auto; }
 button.danger-action { background: var(--danger); border-color: var(--danger); color: #fff; }
+#cancel.is-pending { background: var(--tint-selected); color: var(--text); }
+#undo { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+.submit-error { color: var(--danger); font-size: 13px; }
+.modal p.submit-error { color: var(--danger); }
+.submit-error:empty { display: none; }
 .folder-clear { margin-left: 2px; font-style: normal; }
 .content-scroll { overflow-y: scroll; overflow-x: hidden; flex: 1; contain: layout size; }
 .content { padding: 12px 16px; }
@@ -1834,7 +1813,7 @@ body.list-view #listViewHeader { display: flex; }
 .lv-col-dir { flex: 2; min-width: 80px; }
 .lv-col-size { flex: 0 0 76px; }
 .lv-col-reason { flex: 1; min-width: 60px; cursor: default; }
-.lv-col-actions { flex: 0 0 130px; }
+.lv-col-actions { flex: 0 0 150px; }
 body.list-view .content { padding: 0; }
 body.list-view .group { border-radius: 0; border-left: 0; border-right: 0; border-top: 0; margin-bottom: 0; min-height: 0; }
 body.list-view .group + .group { border-top: 1px solid var(--line); }
@@ -1849,7 +1828,7 @@ body.list-view .name { flex: 2; min-width: 100px; padding: 0 8px; -webkit-line-c
 body.list-view .path { flex: 2; min-width: 80px; padding: 0 8px; -webkit-line-clamp: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; font-size: 11px; }
 body.list-view .badges { display: none; }
 body.list-view .file-size-lv { flex: 0 0 76px; font-size: 11px; color: var(--muted); padding: 0 8px; white-space: nowrap; display: flex; align-items: center; border-right: 1px solid var(--line); height: 100%; }
-body.list-view .choice { border-top: 0; border-left: 1px solid var(--line); flex: 0 0 130px; height: 40px; margin-top: 0; }
+body.list-view .choice { grid-template-columns: 36px 1fr 1fr; border-top: 0; border-left: 1px solid var(--line); flex: 0 0 150px; height: 40px; margin-top: 0; }
 .lv-preview-btn { display: none; }
 body.list-view .lv-preview-btn { display: flex; align-items: center; justify-content: center; font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: -.5px; border: 0; border-radius: 0; border-right: 1px solid var(--line); width: 36px; flex-shrink: 0; background: transparent; color: var(--muted); padding: 0; cursor: pointer; height: 100%; }
 body.list-view .lv-preview-btn:hover { color: var(--text); background: var(--tint-hover); }
@@ -1886,6 +1865,7 @@ body.list-view .file-reason { flex: 1; min-width: 60px; font-size: 11px; color: 
   <button id="folderRules">Folder rules…</button>
   <button id="undo" disabled>Undo</button>
   <div class="header-actions">
+    <span id="submitError" class="submit-error" role="alert"></span>
     <button id="cancel">Cancel</button>
     <button id="finish" class="primary">Move to Trash</button>
   </div>
@@ -1925,6 +1905,7 @@ body.list-view .file-reason { flex: 1; min-width: 60px; font-size: 11px; color: 
     <p>This moves marked duplicates to the Trash/Recycle Bin after one final safety check.</p>
     <div id="confirmFolders" class="confirm-folders"></div>
     <div id="confirmPaths" class="confirm-list"></div>
+    <p id="confirmError" class="submit-error" role="alert"></p>
     <div class="modal-actions">
       <button id="confirmBack">Review again</button>
       <button id="confirmMove" class="danger-action">Move to trash</button>
@@ -1986,6 +1967,10 @@ const trash = new Set();
 const manualChoices = new Set();
 const undoStack = [];
 const MAX_UNDO_STEPS = 20;
+const CANCEL_GRACE_MS = 5000;
+const THUMB_CLICK_SELECTS = true;
+let cancelTimer = null;
+let closeDirPicker = null;
 let trashedOnly = false;
 let isSubmitting = false;
 let sessionId = null;
@@ -2062,6 +2047,9 @@ function findFile(fileId) {
 }
 function findCard(fileId) {
   return Array.from(document.querySelectorAll("[data-file-id]")).find(card => card.dataset.fileId === fileId);
+}
+function isModalOverlayOpen() {
+  return $("confirmOverlay").classList.contains("is-open") || $("folderRulesOverlay").classList.contains("is-open");
 }
 function isTextInputTarget(target) {
   return target && typeof target.closest === "function" && (target.closest("input, textarea, select, video, audio") || target.isContentEditable);
@@ -2234,8 +2222,7 @@ function openFolderRules() {
   $("folderRulesOverlay").classList.add("is-open");
   $("folderRulesSearch").focus();
 }
-function closeFolderRules(force = false) {
-  if (!force && folderRulesDirty && !window.confirm("Close with unapplied folder rule changes? Rules will stay in this review session.")) return;
+function closeFolderRules() {
   $("folderRulesOverlay").classList.remove("is-open");
 }
 function applyFolderRules() {
@@ -2246,7 +2233,7 @@ function applyFolderRules() {
   replaceMap(folderRuleReasons, Array.from(preview.nextFolderRuleReasons.entries()));
   folderRulesDirty = false;
   updateFolderRulesButton();
-  closeFolderRules(true);
+  closeFolderRules();
   refreshSelectionUi(preview.changedIds);
 }
 function replaceSet(target, values) {
@@ -2291,6 +2278,7 @@ function updateUndoButton() {
   const last = undoStack[undoStack.length - 1];
   button.disabled = !last;
   button.textContent = last ? `Undo ${last.label}` : "Undo";
+  button.title = button.textContent;
 }
 function setManual(ids) {
   ids.forEach((id) => {
@@ -2352,7 +2340,8 @@ function clearFilters() {
 }
 function mark(fileId, shouldTrash) {
   if (trash.has(fileId) === shouldTrash) return;
-  recordUndo("last change");
+  const file = findFile(fileId);
+  recordUndo(`${shouldTrash ? "trash" : "keep"} ${file ? file.name : "file"}`);
   if (shouldTrash) trash.add(fileId); else trash.delete(fileId);
   manualChoices.add(fileId);
   folderRuleReasons.delete(fileId);
@@ -2390,8 +2379,9 @@ function applyMarkGroup(baseTrash, group, mode, dirPath, global = false) {
   });
   return nextTrash;
 }
+const GROUP_UNDO_LABELS = { "trash":"Trash copies", "oldest":"Keep oldest", "none":"Keep all", "default":"defaults", "keepDir":"Keep this folder", "byDirKeep":"Keep only this folder", "byDirTrash":"Trash this folder" };
 function markGroup(group, mode, dirPath, global = false) {
-  recordUndo("bulk change");
+  recordUndo(mode === "byDirTrash" && global ? "Trash this folder everywhere" : (GROUP_UNDO_LABELS[mode] || "bulk change"));
   const before = new Set(trash);
   const nextTrash = applyMarkGroup(before, group, mode, dirPath, global);
   replaceSet(trash, Array.from(nextTrash));
@@ -2407,8 +2397,10 @@ function folderActionImpact(group, mode, dirPath, global = false) {
 }
 function showDirPicker(group, event) {
   event.stopPropagation();
+  if (closeDirPicker) closeDirPicker(false);
   const existing = document.querySelector(".dir-picker");
   if (existing) existing.remove();
+  const opener = event.target.closest("button");
   const dirs = [...new Set(group.files.map((f) => f.directory))].sort();
   const picker = document.createElement("div");
   picker.className = "dir-picker";
@@ -2428,7 +2420,7 @@ function showDirPicker(group, event) {
       button.textContent = label;
       button.title = folderActionImpact(group, mode, dir, global);
       button.className = className;
-      button.onclick = (e) => { e.stopPropagation(); markGroup(group, mode, dir, global); picker.remove(); };
+      button.onclick = (e) => { e.stopPropagation(); markGroup(group, mode, dir, global); close(true); };
       btns.appendChild(button);
     });
     row.appendChild(path);
@@ -2437,8 +2429,27 @@ function showDirPicker(group, event) {
     picker.appendChild(row);
   });
   event.target.closest(".group").appendChild(picker);
-  const hide = (e) => { if (!picker.contains(e.target)) { picker.remove(); document.removeEventListener("click", hide); } };
-  setTimeout(() => document.addEventListener("click", hide), 10);
+  let armTimer = null;
+  const onDocClick = (e) => { if (!picker.contains(e.target)) close(false); };
+  const onPickerKey = (e) => {
+    if (e.key !== "Escape") return;
+    e.preventDefault();
+    e.stopPropagation();
+    close(true);
+  };
+  function close(restoreFocus) {
+    clearTimeout(armTimer);
+    document.removeEventListener("click", onDocClick);
+    document.removeEventListener("keydown", onPickerKey, true);
+    picker.remove();
+    if (closeDirPicker === close) closeDirPicker = null;
+    if (restoreFocus && opener && document.contains(opener)) opener.focus();
+  }
+  closeDirPicker = close;
+  document.addEventListener("keydown", onPickerKey, true);
+  armTimer = setTimeout(() => document.addEventListener("click", onDocClick), 10);
+  const firstButton = picker.querySelector("button");
+  if (firstButton) firstButton.focus();
 }
 function getGroupVideoThumbs(groupEl) {
   return Array.from(groupEl.querySelectorAll("img[data-video-thumb='1']"));
@@ -2597,6 +2608,7 @@ function initPaneResizer() {
     resizer.classList.add("is-dragging");
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
+    const pointerId = e.pointerId;
     const startX = e.clientX;
     const startWidth = pane.offsetWidth;
     const maxWidth = mainArea.getBoundingClientRect().width * 0.75;
@@ -2609,19 +2621,33 @@ function initPaneResizer() {
         requestAnimationFrame(() => { rafPending = false; applyPaneImageQuality(); });
       }
     };
-    const onUp = () => {
+    const endDrag = (save) => {
       resizer.classList.remove("is-dragging");
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
-      const w = pane.offsetWidth;
-      if (w > 0) try { localStorage.setItem("dedupPaneWidth", w); } catch {}
+      if (save) {
+        const w = pane.offsetWidth;
+        if (w > 0) try { localStorage.setItem("dedupPaneWidth", w); } catch {}
+      }
       resizer.removeEventListener("pointermove", onMove);
       resizer.removeEventListener("pointerup", onUp);
       resizer.removeEventListener("pointercancel", onUp);
+      document.removeEventListener("keydown", onDragKey, true);
+    };
+    const onUp = () => endDrag(true);
+    const onDragKey = (ev) => {
+      if (ev.key !== "Escape") return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      pane.style.width = startWidth + "px";
+      applyPaneImageQuality();
+      try { resizer.releasePointerCapture(pointerId); } catch {}
+      endDrag(false);
     };
     resizer.addEventListener("pointermove", onMove);
     resizer.addEventListener("pointerup", onUp);
     resizer.addEventListener("pointercancel", onUp);
+    document.addEventListener("keydown", onDragKey, true);
   });
   resizer.addEventListener("keydown", (e) => {
     if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
@@ -3057,8 +3083,8 @@ function renderGroupContent(el, group) {
     const typeLabel = {"image":"IMG","video":"VID","audio":"AUD","pdf":"PDF","text":"TXT"}[file.previewKind] || "—";
     const reasonText = selectionReasonForFile(file, isTrash);
     return `<article class="file ${isTrash ? 'is-trash' : 'is-keep'}" data-file-id="${esc(file.id)}">
-      <button class="reveal-btn" data-action="reveal" title="Reveal ${esc(file.name)} in Finder/Explorer" aria-label="Reveal ${esc(file.name)} in Finder/Explorer">Open</button>
-      <div class="thumb" role="button" tabindex="0" data-action="preview" data-group-id="${esc(group.id)}">${mediaHtml(file)}</div>
+      <button class="reveal-btn" data-action="reveal" title="Reveal ${esc(file.name)} in Finder/Explorer" aria-label="Reveal ${esc(file.name)} in Finder/Explorer">Reveal</button>
+      <div class="thumb" role="button" tabindex="0" title="Preview (double-click or Enter)" data-action="preview" data-group-id="${esc(group.id)}">${mediaHtml(file)}</div>
       <div class="meta"><div class="file-type-badge">${esc(typeLabel)}</div><div class="name" title="${esc(file.name)}">${esc(file.name)}</div><div class="path" title="${esc(file.path)}">${esc(file.directory)}</div><div class="badges">${fileBadgesHtml(file, isTrash)}</div><div class="file-size-lv">${esc(file.sizeLabel)}</div><div class="file-reason">${esc(reasonText)}</div><div class="choice"><button class="lv-preview-btn" data-action="preview" data-group-id="${esc(group.id)}" title="Preview">(o)</button><button class="${!isTrash ? 'active keep' : 'keep'}" data-mark="keep" title="Keep (K)">Keep</button><button class="${isTrash ? 'active trash' : 'trash'}" data-mark="trash" title="Trash (T)">Trash</button></div></div>
     </article>`;
   }).join("");
@@ -3098,7 +3124,8 @@ function handleGroupsClick(event) {
   }
 
   const previewTarget = target.closest("[data-action='preview']");
-  if (previewTarget && root.contains(previewTarget)) {
+  const thumbSelects = THUMB_CLICK_SELECTS && paneOpen && !listViewMode;
+  if (previewTarget && root.contains(previewTarget) && !(thumbSelects && previewTarget.classList.contains("thumb"))) {
     event.stopPropagation();
     const card = previewTarget.closest("[data-file-id]");
     if (card) openPreview(card.dataset.fileId, previewTarget.dataset.groupId, event);
@@ -3156,6 +3183,15 @@ function markKey(event) {
   }
   return false;
 }
+function handleGroupsDblClick(event) {
+  if (!(THUMB_CLICK_SELECTS && paneOpen && !listViewMode)) return;
+  const previewTarget = event.target.closest("[data-action='preview']");
+  if (!previewTarget || !event.currentTarget.contains(previewTarget)) return;
+  const card = previewTarget.closest("[data-file-id]");
+  if (!card) return;
+  if ($("previewOverlay").classList.contains("is-open") && previewContext && previewContext.fileId === card.dataset.fileId) return;
+  openPreview(card.dataset.fileId, previewTarget.dataset.groupId, event);
+}
 function handleGroupsKeydown(event) {
   if (event.key !== "Enter" && event.key !== " ") return;
   const previewTarget = event.target.closest("[data-action='preview']");
@@ -3164,6 +3200,10 @@ function handleGroupsKeydown(event) {
   const card = previewTarget.closest("[data-file-id]");
   if (card) openPreview(card.dataset.fileId, previewTarget.dataset.groupId, event);
 }
+function updateFinishButton(count) {
+  if (isSubmitting) return;
+  $("finish").textContent = count > 0 ? `Move ${count} to Trash` : "Finish";
+}
 function updateStats(filters = getFilters()) {
   const totalGroups = allData.groups.length;
   const visibleFiles = renderGroups.reduce((sum, g) => sum + (g._visibleFiles || []).length, 0);
@@ -3171,6 +3211,7 @@ function updateStats(filters = getFilters()) {
   $("groupCount").textContent = `${renderGroups.length} / ${totalGroups}`;
   $("fileCount").textContent = `${visibleFiles} / ${totalFileCount}`;
   $("trashCount").textContent = trashSummary.count;
+  updateFinishButton(trashSummary.count);
   $("reclaimSize").textContent = formatSize(trashSummary.bytes);
   updateFilterHint(filters);
   renderFolderSummary(filters);
@@ -3210,12 +3251,44 @@ function renderFolderSummary(filters = getFilters()) {
     return `<button class="folder-row${active ? ' is-active' : ''}" data-directory="${esc(row.directory)}" onclick="focusFolderFromButton(this)" title="${active ? 'Click to clear filter' : esc(row.directory)}"><b>${esc(row.directory)}</b><span>${row.marked} of ${row.visible} · ${formatSize(row.bytes)}${active ? '<span class="folder-clear" aria-label="clear"> ×</span>' : ''}</span></button>`;
   }).join("");
 }
+function stopCancelCountdown() {
+  if (!cancelTimer) return false;
+  clearInterval(cancelTimer);
+  cancelTimer = null;
+  const button = $("cancel");
+  button.classList.remove("is-pending");
+  button.textContent = "Cancel";
+  return true;
+}
+function requestCancel() {
+  if (stopCancelCountdown() || isSubmitting) return;
+  if (CANCEL_GRACE_MS <= 0 || undoStack.length === 0) {
+    submitSelection(true);
+    return;
+  }
+  const button = $("cancel");
+  let remaining = Math.ceil(CANCEL_GRACE_MS / 1000);
+  const label = () => `Keep reviewing · ${remaining}s`;
+  button.classList.add("is-pending");
+  button.textContent = label();
+  cancelTimer = setInterval(() => {
+    remaining -= 1;
+    if (remaining > 0) {
+      button.textContent = label();
+      return;
+    }
+    stopCancelCountdown();
+    submitSelection(true);
+  }, 1000);
+}
 function showMoveConfirmation() {
+  stopCancelCountdown();
   const summary = getTrashDetails();
   if (!requireMoveConfirmation || summary.count === 0) {
     submitSelection(false);
     return;
   }
+  $("confirmMove").textContent = `Move ${summary.count} to Trash`;
   $("confirmSummary").textContent = `${summary.count} file(s), ${formatSize(summary.bytes)} reclaimable across ${summary.folders.length} folder(s).`;
   $("confirmFolders").innerHTML = summary.folders.slice(0, 5).map(folder => `<div><b>${esc(folder.directory)}</b>: ${folder.count} file(s), ${formatSize(folder.bytes)}</div>`).join("");
   $("confirmPaths").innerHTML = summary.files.map(file => `<div>${esc(file.path)}</div>`).join("");
@@ -3287,11 +3360,12 @@ function restoreFromLocalStorage() {
 async function submitSelection(cancelled) {
   if (isSubmitting) return;
   isSubmitting = true;
+  $("submitError").textContent = "";
+  $("confirmError").textContent = "";
   const finishButton = $("finish");
   const cancelButton = $("cancel");
   const confirmMoveButton = $("confirmMove");
   const confirmBackButton = $("confirmBack");
-  const finishText = finishButton.textContent;
   const cancelText = cancelButton.textContent;
   const confirmMoveText = confirmMoveButton.textContent;
   finishButton.disabled = true;
@@ -3315,10 +3389,12 @@ async function submitSelection(cancelled) {
     cancelButton.disabled = false;
     confirmMoveButton.disabled = false;
     confirmBackButton.disabled = false;
-    finishButton.textContent = finishText;
+    updateFinishButton(getTrashDetails().count);
     cancelButton.textContent = cancelText;
     confirmMoveButton.textContent = confirmMoveText;
-    alert("Failed to submit selection: " + err.message);
+    const message = `Could not submit: ${err.message}`;
+    $("submitError").textContent = message;
+    $("confirmError").textContent = message;
   }
 }
 function appendClientIndexes(groups) {
@@ -3432,14 +3508,15 @@ async function init() {
   $("collapseClean").addEventListener("click", () => { setTrashedOnly(!trashedOnly); render(); });
   $("undo").addEventListener("click", undoLastAction);
   $("finish").addEventListener("click", showMoveConfirmation);
-  $("cancel").addEventListener("click", () => submitSelection(true));
+  $("cancel").addEventListener("click", requestCancel);
   $("groups").addEventListener("click", handleGroupsClick);
   $("groups").addEventListener("keydown", handleGroupsKeydown);
+  $("groups").addEventListener("dblclick", handleGroupsDblClick);
   $("confirmMove").addEventListener("click", () => submitSelection(false));
   $("confirmBack").addEventListener("click", hideMoveConfirmation);
   $("confirmOverlay").addEventListener("click", (event) => { if (event.target.id === "confirmOverlay") hideMoveConfirmation(); });
   $("previewClose").addEventListener("click", () => closePreview());
-  $("previewOverlay").addEventListener("click", (event) => { if (event.target.id === "previewOverlay") closePreview(); });
+  $("previewOverlay").addEventListener("click", (event) => { if (event.target.id === "previewOverlay" && event.detail < 2) closePreview(); });
   $("previewPrev").addEventListener("click", () => navigatePreview(-1));
   $("previewNext").addEventListener("click", () => navigatePreview(1));
   $("previewKeep").addEventListener("click", () => { if (previewContext) { mark(previewContext.fileId, false); } });
@@ -3447,9 +3524,25 @@ async function init() {
   $("previewKeep2").addEventListener("click", () => { if (previewContext) { mark(previewContext.fileId, false); } });
   $("previewTrash2").addEventListener("click", () => { if (previewContext) { mark(previewContext.fileId, true); } });
   document.addEventListener("keydown", (event) => {
+    if ((event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "z") {
+      if (!isSubmitting && undoStack.length && !isTextInputTarget(event.target) && !isModalOverlayOpen()) {
+        event.preventDefault();
+        undoLastAction();
+      }
+      return;
+    }
     if (markKey(event)) return;
+    if (event.key === "Enter" && !event.defaultPrevented && !event.repeat && !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      const interactive = event.target && typeof event.target.closest === "function" && event.target.closest('button, a, input, textarea, select, [role="button"], video, audio');
+      if (activeFileId && activeGroupId && !isSubmitting && !interactive && !isModalOverlayOpen() && !$("previewOverlay").classList.contains("is-open")) {
+        event.preventDefault();
+        openPreview(activeFileId, activeGroupId);
+        return;
+      }
+    }
     if (event.key === "Escape") {
-      if ($("previewOverlay").classList.contains("is-open")) closePreview();
+      if (cancelTimer && !$("previewOverlay").classList.contains("is-open") && !isModalOverlayOpen()) stopCancelCountdown();
+      else if ($("previewOverlay").classList.contains("is-open")) closePreview();
       else if ($("folderRulesOverlay").classList.contains("is-open")) closeFolderRules();
       else if ($("confirmOverlay").classList.contains("is-open")) hideMoveConfirmation();
     }
@@ -3993,6 +4086,9 @@ button.danger-outline { color: var(--danger); border-color: var(--danger-border)
 .confirm-list { max-height: 220px; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius); padding: 8px; background: var(--surface); font-size: 11px; color: var(--muted); }
 .confirm-list div { word-break: break-all; margin-bottom: 4px; }
 .modal-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+.submit-error { margin: 0; color: var(--danger); font-size: 13px; }
+.modal p.submit-error { color: var(--danger); }
+.submit-error:empty, #confirmNote:empty { display: none; }
 </style>
 </head>
 <body>
@@ -4001,7 +4097,8 @@ button.danger-outline { color: var(--danger); border-color: var(--danger-border)
   <div class="toolbar">
     <button onclick="selectAll()">Select All</button>
     <button onclick="selectNone()">Select None</button>
-    <button class="danger-outline" id="confirmBtn" onclick="openConfirm()" disabled>Delete Selected</button>
+    <p id="postError" class="submit-error" role="alert"></p>
+    <button class="danger-outline" id="confirmBtn" onclick="openConfirm()" disabled>Move to Trash</button>
     <button onclick="cancel()">Cancel</button>
   </div>
 </header>
@@ -4012,12 +4109,13 @@ button.danger-outline { color: var(--danger); border-color: var(--danger-border)
 
 <div class="modal-backdrop" id="confirmModal">
   <div class="modal">
-    <h2>Confirm Deletion</h2>
+    <h2 id="confirmTitle">Move to Trash?</h2>
     <p id="confirmNote"></p>
     <div class="confirm-list" id="confirmList"></div>
+    <p id="confirmPostError" class="submit-error" role="alert"></p>
     <div class="modal-actions">
-      <button onclick="closeConfirm()">Back</button>
-      <button class="primary" style="background:var(--danger);border-color:var(--danger)" onclick="doConfirm()">Move to Trash</button>
+      <button id="confirmBack" onclick="closeConfirm()">Back</button>
+      <button id="confirmMove" class="primary" style="background:var(--danger);border-color:var(--danger)" onclick="doConfirm()">Move to Trash</button>
     </div>
   </div>
 </div>
@@ -4138,7 +4236,9 @@ function render() {
     : n + ' selected';
   if (n > 0 && eff < n) summary += ` · ${eff} will be trashed (${n - eff} covered by a selected parent)`;
   document.getElementById('summary').textContent = summary;
-  document.getElementById('confirmBtn').disabled = n === 0;
+  const confirmBtn = document.getElementById('confirmBtn');
+  confirmBtn.disabled = n === 0;
+  confirmBtn.textContent = eff > 0 ? `Move ${eff} to Trash` : 'Move to Trash';
 }
 
 // ── Selection ───────────────────────────────────────────────────────────────
@@ -4164,15 +4264,36 @@ function openConfirm() {
   const eff = effectiveSelection();
   const skipped = selected.size - eff.length;
   document.getElementById('confirmNote').textContent = skipped > 0
-    ? `Move ${eff.length} folder${eff.length === 1 ? '' : 's'} to the Trash? (${skipped} covered by parent and omitted.)`
-    : `Move ${eff.length} folder${eff.length === 1 ? '' : 's'} to the Trash?`;
+    ? `${skipped} more covered by a selected parent and omitted.` : '';
   document.getElementById('confirmList').innerHTML = eff.map(p => `<div>${esc(p)}</div>`).join('');
+  document.getElementById('confirmTitle').textContent =
+    `Move ${eff.length} folder${eff.length === 1 ? '' : 's'} to Trash?`;
+  document.getElementById('confirmMove').textContent = `Move ${eff.length} to Trash`;
+  document.getElementById('confirmPostError').textContent = '';
   document.getElementById('confirmModal').classList.add('is-open');
+  document.getElementById('confirmBack').focus();
 }
 
 function closeConfirm() {
   document.getElementById('confirmModal').classList.remove('is-open');
+  document.getElementById('confirmBtn').focus();
 }
+
+function isConfirmOpen() {
+  const modal = document.getElementById('confirmModal');
+  return !!modal && modal.classList.contains('is-open');
+}
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && isConfirmOpen()) {
+    event.preventDefault();
+    closeConfirm();
+  }
+});
+
+document.getElementById('confirmModal').addEventListener('click', (event) => {
+  if (event.target === event.currentTarget) closeConfirm();
+});
 
 function showDone(label) {
   document.body.innerHTML = `<main style="display:flex;align-items:center;justify-content:center;height:100vh;text-align:center;"><div><h1>${label}</h1><p>Returning to terminal...</p><button onclick="window.close()">Close Tab</button></div></main>`;
@@ -4180,6 +4301,8 @@ function showDone(label) {
 }
 
 async function postSelection(body) {
+  document.getElementById('postError').textContent = '';
+  document.getElementById('confirmPostError').textContent = '';
   const buttons = document.querySelectorAll('button');
   buttons.forEach(b => b.disabled = true);
   try {
@@ -4192,14 +4315,19 @@ async function postSelection(body) {
     return true;
   } catch (err) {
     buttons.forEach(b => b.disabled = false);
-    alert('Could not reach the dedup server (' + err.message + '). Check the terminal and try again.');
+    const message = 'Could not reach the dedup server (' + err.message + '). Check the terminal and try again.';
+    document.getElementById('postError').textContent = message;
+    document.getElementById('confirmPostError').textContent = message;
     return false;
   }
 }
 
 async function doConfirm() {
-  closeConfirm();
-  if (await postSelection({selected: effectiveSelection()})) showDone('Done');
+  if (await postSelection({selected: effectiveSelection()})) {
+    showDone('Done');
+  } else if (isConfirmOpen()) {
+    document.getElementById('confirmBack').focus();
+  }
 }
 
 async function cancel() {

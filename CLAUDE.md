@@ -45,7 +45,7 @@ Manual browser UI verification: `python3 dedup.py testfile/ --dry-run`
 | ~500–1110 | Utilities: media detection, ffmpeg thumbnails, text preview, hashing, thumbnail cache, progress lines |
 | ~1110–1390 | Duplicate scanning: size grouping, fast sampled hashing, full-content verify, verdict lines, scan header; `find_empty_dirs` |
 | ~1390–1495 | `build_browser_payload` |
-| **~1495–1550** | **`_SHARED_CSS`** — palette, dark mode, base button/modal rules |
+| **~1495–1550** | **`_SHARED_CSS`** — palette tokens, base button/modal rules |
 | **~1551–1562** | **`_SHARED_JS`** — `esc()` HTML-escaping utility and popup window IIFE |
 | **~1563–3400** | **`build_browser_html()`** — duplicate review UI (ffmpeg-only thumbnail path: `ffmpegThumbUrl`, `hydrateVideoFile`, `hydrateVideoMetadata`, `startGroupVideoThumbCycle`, `startPaneVideoCycle`, `renderPreview`) |
 | ~3400–3520 | `sanitize_browser_trash_selection` + trash-selection helpers |
@@ -63,7 +63,7 @@ return "...<style>" + _SHARED_CSS + "/* page-specific */" + ...
        "...<script>" + _SHARED_JS + "let allData..." + ...
 ```
 
-- **Edit `_SHARED_CSS`** to change the color palette, dark mode tokens, or base `button`/modal rules.
+- **Edit `_SHARED_CSS`** to change the color palette tokens or base `button`/modal rules.
 - **Edit `_SHARED_JS`** to change the shared `esc()` escaping utility or popup window behavior.
 - Page-specific CSS and JS follow the shared block in each builder. Cascade order is intentional: shared base rules first, page overrides after.
 
@@ -126,27 +126,27 @@ The remaining guards reject input that never appears in normal use, so no ordina
 
 ## Color palette (CSS custom properties)
 
-Defined in `_SHARED_CSS`. Flat / hairline style: pure neutral grays (no warm or blue tint), expressed as black (light) or white (dark) at an alpha so they layer on any surface. Layers are separated by 1px hairlines and low-alpha tints; shadows only on floating things (modals, the dir-picker), always with a 1px ring. System-preference dark mode only (no toggle).
+Defined in `_SHARED_CSS`. Flat / hairline style: pure neutral grays (no warm or blue tint), expressed as black at an alpha so they layer on any surface. Layers are separated by 1px hairlines and low-alpha tints; shadows only on floating things (modals, the dir-picker), always with a 1px ring. Light only: there is no dark mode, and `color-scheme: light` keeps native controls light when the OS is in dark mode.
 
 Primary tokens:
 
-| Variable | Light | Dark |
-|---|---|---|
-| `--bg-page` | `#ffffff` | `#161616` |
-| `--bg-sidebar` | `#fafafa` | `#111111` |
-| `--bg-raised` | `#ffffff` | `#1f1f1f` |
-| `--text-primary` | `rgba(0,0,0,.90)` | `rgba(255,255,255,.92)` |
-| `--text-secondary` | `rgba(0,0,0,.60)` | `rgba(255,255,255,.64)` |
-| `--text-muted` | `rgba(0,0,0,.47)` | `rgba(255,255,255,.48)` |
-| `--border` | `rgba(0,0,0,.08)` | `rgba(255,255,255,.10)` |
-| `--border-strong` | `rgba(0,0,0,.10)` | `rgba(255,255,255,.12)` |
-| `--tint-hover` | `rgba(0,0,0,.05)` | `rgba(255,255,255,.06)` |
-| `--tint-selected` | `rgba(0,0,0,.10)` | `rgba(255,255,255,.12)` |
-| `--keep` | `#16a34a` | `#22c55e` |
-| `--danger` | `#dc2626` | `#ef4444` |
+| Variable | Value |
+|---|---|
+| `--bg-page` | `#ffffff` |
+| `--bg-sidebar` | `#fafafa` |
+| `--bg-raised` | `#ffffff` |
+| `--text-primary` | `rgba(0,0,0,.90)` |
+| `--text-secondary` | `rgba(0,0,0,.60)` |
+| `--text-muted` | `rgba(0,0,0,.47)` |
+| `--border` | `rgba(0,0,0,.08)` |
+| `--border-strong` | `rgba(0,0,0,.10)` |
+| `--tint-hover` | `rgba(0,0,0,.05)` |
+| `--tint-selected` | `rgba(0,0,0,.10)` |
+| `--keep` | `#16a34a` |
+| `--danger` | `#dc2626` |
 
 `--keep-bg`/`--keep-border` and `--danger-bg`/`--danger-border` are the semantic color at a low alpha. Radius (`--radius-md` 6px controls, `--radius` 8px inputs/tiles, `--radius-xl` 12px cards/popovers, `--radius-composer` 14px modals), shadow (`--shadow-panel`, `--shadow-sm`), weight and motion (`--dur-fast` 60ms press, `--dur` 200ms color) tokens sit in the same block.
 
-The older names are aliases that page CSS and inline `style="…"` attributes in JS templates still use: `--bg` → `--bg-sidebar`, `--panel` → `--bg-page`, `--text` → `--text-primary`, `--muted` → `--text-secondary`, `--line` → `--border`, `--hover-tint` → `--tint-hover`. `--surface` is a 4–5% alpha tint, so anything sticky over scrolling content (e.g. `#listViewHeader`) must composite it on an opaque `var(--panel)`. Keep `--text-muted` for placeholders and faint glyphs only; it is under 4.5:1 on white.
+The older names are aliases that page CSS and inline `style="…"` attributes in JS templates still use: `--bg` → `--bg-sidebar`, `--panel` → `--bg-page`, `--text` → `--text-primary`, `--muted` → `--text-secondary`, `--line` → `--border`, `--hover-tint` → `--tint-hover`. `--surface` is a 4% alpha tint, so anything sticky over scrolling content (e.g. `#listViewHeader`) must composite it on an opaque `var(--panel)`. Keep `--text-muted` for placeholders and faint glyphs only; it is under 4.5:1 on white.
 
 Semantic green/red only. No other accent color.
