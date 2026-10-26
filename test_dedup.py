@@ -939,7 +939,7 @@ class ThumbnailShutdownTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, directory, True)
         script = os.path.join(directory, "ffmpeg-slow.sh")
         with open(script, "w", encoding="utf-8") as file_obj:
-            file_obj.write("#!/bin/sh\nsleep 30\n")
+            file_obj.write("#!/bin/sh\nexec sleep 30\n")
         os.chmod(script, 0o755)
         return script
 
@@ -2081,7 +2081,8 @@ class VolumeHelperTests(unittest.TestCase):
                 file_obj.write(b"first collision")
             source = self._make_file(temp_dir, "source", "f.txt")
 
-            with mock.patch.object(dedup.os.path, "expanduser", return_value=trash_dir):
+            with mock.patch.object(dedup, "CURRENT_OS", dedup.OS_MACOS), \
+                    mock.patch.object(dedup.os.path, "expanduser", return_value=trash_dir):
                 with mock.patch.object(dedup.os, "getpid", return_value=123):
                     dest = dedup.move_to_local_trash(source)
 
