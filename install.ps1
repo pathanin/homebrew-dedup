@@ -123,6 +123,7 @@ function Set-SessionPathEntry {
     }
 }
 
+$tempZip = $null
 try {
     if ($Version -eq 'latest') {
         $latestUrl = "https://api.github.com/repos/$Repository/releases/latest"
@@ -228,7 +229,7 @@ try {
 
     throw $message
 } finally {
-    if (Test-Path $tempZip) {
+    if ($tempZip -and (Test-Path $tempZip)) {
         Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
     }
 }

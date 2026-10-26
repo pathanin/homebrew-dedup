@@ -126,6 +126,7 @@ PROGRESS_INTERVAL = 0.25
 RANGE_SERVE_CHUNK_BYTES = 65536
 SUBPROCESS_SEMAPHORE = threading.Semaphore(4)
 THUMBNAIL_SUBPROCESS_SEMAPHORE = threading.Semaphore(8)
+THUMBNAIL_SHUTDOWN_GRACE_SECONDS = 2
 DEFAULT_PAGINATION_LIMIT = 500
 MAX_PAGINATION_LIMIT = 2000
 DEFAULT_PROGRESS_EVERY = 5000
@@ -141,7 +142,7 @@ DEFAULT_IGNORE_DIRS = {
     "Documents and Settings",
 }
 DEFAULT_IGNORE_FILES = {
-    ".DS_Store", "Thumbs.db", ".localized", "Icon?", "desktop.ini", "pagefile.sys",
+    ".DS_Store", "Thumbs.db", ".localized", "Icon\r", "desktop.ini", "pagefile.sys",
     "hiberfil.sys", "swapfile.sys", ".metadata_never_index", "autorun.inf", "boot.ini",
     "bootmgr", "BOOTNXT", "bootsect.bak", "ntldr", "ntuser.dat", "ntuser.dat.log",
     "ntuser.ini", "system.ini", "win.ini",
@@ -742,7 +743,53 @@ class ThumbnailCache:
         self.byte_size = 0
 
 
-def render_thumbnail(path, width=360, height=240, thumb_index=0):
+_THUMBNAIL_CHILDREN = set()
+_THUMBNAIL_CHILDREN_LOCK = threading.Lock()
+
+
+def _track_thumbnail_child(process):
+    with _THUMBNAIL_CHILDREN_LOCK:
+        _THUMBNAIL_CHILDREN.add(process)
+
+
+def _untrack_thumbnail_child(process):
+    with _THUMBNAIL_CHILDREN_LOCK:
+        _THUMBNAIL_CHILDREN.discard(process)
+
+
+def terminate_thumbnail_subprocesses(timeout=THUMBNAIL_SHUTDOWN_GRACE_SECONDS):
+    """Stop every live ffmpeg child so it releases its source file.
+
+    On Windows a still-open source file makes the trash move fail with a
+    sharing violation, so this runs before the trash step starts.
+    """
+    with _THUMBNAIL_CHILDREN_LOCK:
+        children = list(_THUMBNAIL_CHILDREN)
+    if not children:
+        return
+    for process in children:
+        try:
+            process.terminate()
+        except OSError:
+            pass
+    deadline = time.monotonic() + timeout
+    for process in children:
+        try:
+            process.wait(timeout=max(0.0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            try:
+                process.kill()
+            except OSError:
+                pass
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass
+        except OSError:
+            pass
+
+
+def render_thumbnail(path, width=360, height=240, thumb_index=0, stop_event=None):
     kind = get_media_kind(path)
     if kind not in ("video", "image") or not FFMPEG_PATH:
         return None
@@ -755,45 +802,46 @@ def render_thumbnail(path, width=360, height=240, thumb_index=0):
 
     try:
         with THUMBNAIL_SUBPROCESS_SEMAPHORE:
-            completed = subprocess.run(
+            if stop_event is not None and stop_event.is_set():
+                return None
+            process = subprocess.Popen(
                 build_thumbnail_command(path, kind, width, height, FFMPEG_PATH, timestamp),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                check=False,
-                timeout=20,
             )
-    except subprocess.TimeoutExpired:
-        print_item("dim", "Thumbnail unavailable", f" (ffmpeg timed out): {path}", sys.stderr)
-        return None
+            _track_thumbnail_child(process)
+            try:
+                stdout, stderr = process.communicate(timeout=20)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate()
+                if stop_event is None or not stop_event.is_set():
+                    print_item("dim", "Thumbnail unavailable", f" (ffmpeg timed out): {path}", sys.stderr)
+                return None
+            finally:
+                _untrack_thumbnail_child(process)
     except OSError:
         return None
-    if completed.returncode != 0:
+    if process.returncode != 0:
+        if stop_event is not None and stop_event.is_set():
+            # Shutting down: the parent terminated ffmpeg on purpose.
+            return None
         # ffmpeg explains a failure over several lines; its last line is the reason.
-        lines = completed.stderr.decode("utf-8", errors="replace").strip().splitlines()
+        lines = stderr.decode("utf-8", errors="replace").strip().splitlines()
         reason = lines[-1].strip() if lines else "no output"
         print_item(
-            "dim", "Thumbnail unavailable", f" (ffmpeg exit {completed.returncode}: {reason}): {path}", sys.stderr
+            "dim", "Thumbnail unavailable", f" (ffmpeg exit {process.returncode}: {reason}): {path}", sys.stderr
         )
         return None
 
-    return completed.stdout
+    return stdout
 
 
-def get_thumbnail(path, cache, width=360, height=240, thumb_index=0):
-    cache_key = get_thumbnail_cache_key(path, width, height, thumb_index)
-    if not cache_key:
+def get_thumbnail_threadsafe(
+    path, cache, cache_lock, in_flight, width=360, height=240, thumb_index=0, stop_event=None
+):
+    if stop_event is not None and stop_event.is_set():
         return None
-    cached_body = cache.get(cache_key)
-    if cached_body is not None:
-        return cached_body
-
-    body = render_thumbnail(path, width, height, thumb_index)
-    if body is not None:
-        cache.put(cache_key, body)
-    return body
-
-
-def get_thumbnail_threadsafe(path, cache, cache_lock, in_flight, width=360, height=240, thumb_index=0):
     cache_key = get_thumbnail_cache_key(path, width, height, thumb_index)
     if not cache_key:
         return None
@@ -812,11 +860,13 @@ def get_thumbnail_threadsafe(path, cache, cache_lock, in_flight, width=360, heig
 
     if not owns_render:
         event.wait()
+        if stop_event is not None and stop_event.is_set():
+            return None
         with cache_lock:
             return cache.get(cache_key)
 
     try:
-        body = render_thumbnail(path, width, height, thumb_index)
+        body = render_thumbnail(path, width, height, thumb_index, stop_event)
         with cache_lock:
             if body is not None:
                 cache.put(cache_key, body)
@@ -827,15 +877,18 @@ def get_thumbnail_threadsafe(path, cache, cache_lock, in_flight, width=360, heig
             event.set()
 
 
-def _warm_thumbnails(cache, cache_lock, in_flight, groups):
+def _warm_thumbnails(cache, cache_lock, in_flight, groups, stop_event=None):
     """Pre-generate thumbnails for every video file in background.
 
     Phase 1 warms frame 0 for all files so the grid paints immediately.
     Phase 2 warms hover-cycling frames so cycling is instant after the grid loads.
     Runs in a daemon thread; failures are silently ignored.
     """
+    stopped = stop_event.is_set if stop_event is not None else (lambda: False)
     video_paths = []
     for group in groups:
+        if stopped():
+            return
         for file_info in group["files"]:
             path = file_info.get("path")
             if path and get_media_kind(path) == "video":
@@ -847,11 +900,15 @@ def _warm_thumbnails(cache, cache_lock, in_flight, groups):
     unique_paths = list(dict.fromkeys(video_paths))
 
     def warm_one(path, thumb_index):
-        get_thumbnail_threadsafe(path, cache, cache_lock, in_flight, 360, 240, thumb_index)
+        if stopped():
+            return
+        get_thumbnail_threadsafe(
+            path, cache, cache_lock, in_flight, 360, 240, thumb_index, stop_event
+        )
 
     with ThreadPoolExecutor(max_workers=16) as pool:
         # Phase 1: frame 0 for all files — feeds the initial grid paint
-        phase1 = [pool.submit(warm_one, p, 0) for p in unique_paths]
+        phase1 = [pool.submit(warm_one, p, 0) for p in unique_paths if not stopped()]
         for f in as_completed(phase1):
             try:
                 f.result()
@@ -861,11 +918,13 @@ def _warm_thumbnails(cache, cache_lock, in_flight, groups):
         # Phase 2: remaining hover frames — so cycling is instant from cache
         hover_tasks = []
         for path in unique_paths:
+            if stopped():
+                break
             duration = get_video_duration(path)
             count = get_video_thumbnail_count(duration)
             for i in range(1, count):
                 hover_tasks.append((path, i))
-        phase2 = [pool.submit(warm_one, p, i) for p, i in hover_tasks]
+        phase2 = [pool.submit(warm_one, p, i) for p, i in hover_tasks if not stopped()]
         for f in as_completed(phase2):
             try:
                 f.result()
@@ -884,15 +943,11 @@ def guess_original_filename(files):
     return candidates[0]
 
 
-def describe_original_reason(info, group_files, original):
+def describe_original_reason(info, original):
     if info.path == original.path:
-        if info.mtime_ns == min(item.mtime_ns for item in group_files):
-            return "older file"
-        if copy_name_rank(info.path) == min(copy_name_rank(item.path) for item in group_files):
-            return "not copy-name"
-        if len(info.path) == min(len(item.path) for item in group_files):
-            return "shorter path"
-        return "path tiebreak"
+        # guess_original_filename() picks the minimum mtime, so the original
+        # is always the oldest file in the group.
+        return "older file"
     if info.mtime_ns > original.mtime_ns:
         return "newer copy"
     if copy_name_rank(info.path) > copy_name_rank(original.path):
@@ -1091,7 +1146,7 @@ _FILE_ATTRIBUTE_RECALL_ON_OPEN = 0x00040000
 _FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS = 0x00400000
 
 
-def _is_cloud_placeholder(file_stat, path=None):
+def _is_cloud_placeholder(file_stat):
     """Return True if the file is a cloud-storage placeholder with no local bytes.
 
     On macOS, iCloud Drive marks evicted (cloud-only) files with the SF_DATALESS
@@ -1155,7 +1210,7 @@ def scan_by_size(options, stats):
             if not stat.S_ISREG(file_stat.st_mode):
                 stats.ignored += 1
                 continue
-            if _is_cloud_placeholder(file_stat, path):
+            if _is_cloud_placeholder(file_stat):
                 stats.cloud_skipped += 1
                 if len(stats.cloud_skipped_paths) < 50:
                     stats.cloud_skipped_paths.append(path)
@@ -1423,7 +1478,7 @@ def build_browser_payload(duplicate_groups):
                 "isOriginalGuess": info.path == original.path,
                 "isHardlink": is_hardlink,
                 "selectionReason": "hardlink path" if is_hardlink else "original guess" if info.path == original.path else "auto-marked copy",
-                "originalReason": describe_original_reason(info, group.files, original),
+                "originalReason": describe_original_reason(info, original),
                 "defaultTrash": default_trash,
             })
         groups.append({
@@ -1593,13 +1648,14 @@ button.danger-action { background: var(--danger); border-color: var(--danger); c
 .folder-clear { margin-left: 2px; font-style: normal; }
 .content-scroll { overflow-y: scroll; overflow-x: hidden; flex: 1; contain: layout size; }
 .content { padding: 12px 16px; }
-.group { margin-bottom: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; min-height: 100px; }
+.group { position: relative; margin-bottom: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; min-height: 100px; }
 .group-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px; background: var(--surface); font-size: 12px; }
 .group-title { min-width: 0; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .group-title span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .group-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .group-actions > button { font-size: 11px; padding: 3px 8px; border-radius: 4px; }
 .group-actions .trash-copies { border-color: var(--danger-border); color: var(--danger); background: var(--danger-bg); }
+.group:has(.dir-picker) { overflow: visible; z-index: 5; }\
 .group-impact { font-size: 11px; color: var(--muted); }
 .files { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; padding: 10px; }
 .file { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--panel); position: relative; display: grid; grid-template-rows: 140px 1fr; transition: border-color .12s; }
@@ -2083,8 +2139,8 @@ function folderRuleLabel(rule) {
   return `${rule.type === "keep" ? "Keep" : "Mark for Trash"}${rule.subtree ? " subtree" : " exact"}`;
 }
 function basenameForDirectory(directory) {
-  const trimmed = String(directory || ".").replace(/[\\/]+$/, "");
-  const parts = trimmed.split(/[\\/]+/);
+  const trimmed = String(directory || ".").replace(/[\\\\/]+$/, "");
+  const parts = trimmed.split(/[\\\\/]+/);
   return parts[parts.length - 1] || trimmed || ".";
 }
 function addFolderRule(directory, type, subtree) {
@@ -2228,6 +2284,7 @@ function refreshSelectionUi(changedIds = []) {
     return;
   }
   changedIds.forEach(updateFileCard);
+  new Set(changedIds.map(id => { const card = findCard(id); return card && card.closest(".group"); })).forEach(updateGroupImpact);
   updateStats();
   saveSelections();
 }
@@ -2940,13 +2997,24 @@ async function revealFile(fileId, button) {
     setTimeout(() => { button.disabled = false; button.textContent = originalText; }, 1600);
   }
 }
+function groupImpactHtml(files) {
+  const groupTrashCount = files.filter(f => trash.has(f.id)).length;
+  const groupTrashBytes = files.reduce((s, f) => trash.has(f.id) ? s + f.size : s, 0);
+  return groupTrashCount > 0 ? `<span class="group-impact">${groupTrashCount} marked · ${formatSize(groupTrashBytes)}</span>` : "";
+}
+function updateGroupImpact(groupEl) {
+  const group = groupEl && groupById.get(groupEl.dataset.groupId);
+  const title = groupEl && groupEl.querySelector(".group-title");
+  if (!group || !title) return;
+  const old = title.querySelector(".group-impact");
+  if (old) old.remove();
+  title.insertAdjacentHTML("beforeend", groupImpactHtml(group._visibleFiles || visibleFilesForGroup(group, getFilters())));
+}
 function renderGroupContent(el, group) {
   el.dataset.rendered = "1";
   const files = group._visibleFiles || visibleFilesForGroup(group, getFilters());
   const fileCountLabel = files.length === group.files.length ? `${group.files.length} files` : `${files.length} of ${group.files.length} files`;
-  const groupTrashCount = files.filter(f => trash.has(f.id)).length;
-  const groupTrashBytes = files.reduce((s, f) => trash.has(f.id) ? s + f.size : s, 0);
-  const groupImpactHtml = groupTrashCount > 0 ? `<span class="group-impact">${groupTrashCount} marked · ${formatSize(groupTrashBytes)}</span>` : "";
+  const impactHtml = groupImpactHtml(files);
   const cards = files.map((file) => {
     const isTrash = trash.has(file.id);
     const typeLabel = {"image":"IMG","video":"VID","audio":"AUD","pdf":"PDF","text":"TXT"}[file.previewKind] || "—";
@@ -2957,7 +3025,7 @@ function renderGroupContent(el, group) {
       <div class="meta"><div class="file-type-badge">${esc(typeLabel)}</div><div class="name" title="${esc(file.name)}">${esc(file.name)}</div><div class="path" title="${esc(file.path)}">${esc(file.directory)}</div><div class="badges">${fileBadgesHtml(file, isTrash)}</div><div class="file-size-lv">${esc(file.sizeLabel)}</div><div class="file-reason">${esc(reasonText)}</div><div class="choice"><button class="lv-preview-btn" data-action="preview" data-group-id="${esc(group.id)}" title="Preview">(o)</button><button class="${!isTrash ? 'active keep' : 'keep'}" data-mark="keep" title="Keep (K)">Keep</button><button class="${isTrash ? 'active trash' : 'trash'}" data-mark="trash" title="Trash (T)">Trash</button></div></div>
     </article>`;
   }).join("");
-  el.innerHTML = `<div class="group-head"><div class="group-title"><b>${fileCountLabel}</b><span title="${esc(group.hashName + ' ' + group.hash)}" style="cursor:help">${esc(group.hashName)}</span>${groupImpactHtml}</div><div class="group-actions" data-group-id="${esc(group.id)}"><button class="trash-copies" data-group-action="trash">Trash copies</button><button data-group-action="folder">By folder</button><button data-group-action="oldest">Keep oldest</button><button data-group-action="none">Keep all</button></div></div><div class="files">${cards}</div>`;
+  el.innerHTML = `<div class="group-head"><div class="group-title"><b>${fileCountLabel}</b><span title="${esc(group.hashName + ' ' + group.hash)}" style="cursor:help">${esc(group.hashName)}</span>${impactHtml}</div><div class="group-actions" data-group-id="${esc(group.id)}"><button class="trash-copies" data-group-action="trash">Trash copies</button><button data-group-action="folder">By folder</button><button data-group-action="oldest">Keep oldest</button><button data-group-action="none">Keep all</button></div></div><div class="files">${cards}</div>`;
   el.onmouseenter = () => {
     el.dataset.hovering = "1";
     hydrateVideoMetadata(el).then(() => {
@@ -3385,6 +3453,8 @@ class BrowserSelectionState:
         self.thumbnail_cache = ThumbnailCache()
         self.cache_lock = threading.Lock()
         self.thumbnail_inflight = {}
+        # Set before trashing so no new ffmpeg child can keep a source open.
+        self.thumbnail_stop = threading.Event()
         self._groups_json = json.dumps(
             {
                 "groups": self.groups,
@@ -3464,7 +3534,7 @@ class _BaseHandler(BaseHTTPRequestHandler):
                     start = int(m.group(1))
                     end_str = m.group(2)
 
-                    if start >= size:
+                    if start >= size or (end_str != "" and int(end_str) < start):
                         self.send_response(416)
                         self.send_header("Content-Range", "bytes */" + str(size))
                         self.send_header("Accept-Ranges", "bytes")
@@ -3646,11 +3716,12 @@ def make_browser_handler(state):
                 state.cache_lock,
                 state.thumbnail_inflight,
                 thumb_index=max(0, thumb_index),
+                stop_event=state.thumbnail_stop,
             )
             if not body:
                 self.send_error(404)
                 return
-            self.send_bytes(200, body, THUMBNAIL_CONTENT_TYPE)
+            self.send_bytes(200, body, THUMBNAIL_CONTENT_TYPE, cacheable=True)
 
         def serve_meta(self, file_id):
             path = state._path_by_id.get(file_id)
@@ -3791,10 +3862,21 @@ def select_files_in_browser(
     # Warm thumbnail cache in background so first paint is instant.
     threading.Thread(
         target=_warm_thumbnails,
-        args=(state.thumbnail_cache, state.cache_lock, state.thumbnail_inflight, state.groups),
+        args=(
+            state.thumbnail_cache,
+            state.cache_lock,
+            state.thumbnail_inflight,
+            state.groups,
+            state.thumbnail_stop,
+        ),
         daemon=True,
     ).start()
+
     def cleanup():
+        # Stop rendering first: a live ffmpeg child holds its source file open,
+        # and Windows refuses the trash move while that handle exists.
+        state.thumbnail_stop.set()
+        terminate_thumbnail_subprocesses()
         with state.cache_lock:
             state.thumbnail_cache.clear()
             state.thumbnail_inflight.clear()
@@ -3939,7 +4021,7 @@ function buildTree(paths) {
 function nearestAncestor(path, pathSet) {
   let p = path;
   while (true) {
-    const i = p.lastIndexOf('/');
+    const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\\\'));
     if (i <= 0) return null;
     p = p.slice(0, i);
     if (!p) return null;
@@ -3958,10 +4040,11 @@ function collectChildren(path, childrenMap, continuationPrefix, result) {
 }
 
 function effectiveSelection() {
-  const sorted = [...selected].sort((a, b) => a.split('/').length - b.split('/').length);
+  const depth = p => p.split(/[\\\\/]/).length;
+  const sorted = [...selected].sort((a, b) => depth(a) - depth(b));
   const accepted = [];
   for (const p of sorted) {
-    if (!accepted.some(a => p.startsWith(a + '/'))) accepted.push(p);
+    if (!accepted.some(a => p.startsWith(a + '/') || p.startsWith(a + '\\\\'))) accepted.push(p);
   }
   return accepted;
 }
@@ -4059,24 +4142,31 @@ function showDone(label) {
   setTimeout(() => window.close(), 800);
 }
 
+async function postSelection(body) {
+  const buttons = document.querySelectorAll('button');
+  buttons.forEach(b => b.disabled = true);
+  try {
+    const res = await fetch(authUrl('/api/empty-dirs-selection'), {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return true;
+  } catch (err) {
+    buttons.forEach(b => b.disabled = false);
+    alert('Could not reach the dedup server (' + err.message + '). Check the terminal and try again.');
+    return false;
+  }
+}
+
 async function doConfirm() {
-  document.querySelectorAll('button').forEach(b => b.disabled = true);
   closeConfirm();
-  await fetch(authUrl('/api/empty-dirs-selection'), {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({selected: effectiveSelection()}),
-  });
-  showDone('Done');
+  if (await postSelection({selected: effectiveSelection()})) showDone('Done');
 }
 
 async function cancel() {
-  await fetch(authUrl('/api/empty-dirs-selection'), {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({cancelled: true}),
-  });
-  showDone('Cancelled');
+  if (await postSelection({cancelled: true})) showDone('Cancelled');
 }
 
 init();
@@ -4202,7 +4292,7 @@ class FullHashPreloader:
             before = os.stat(path, follow_symlinks=False)
         except OSError:
             return None
-        if not stat.S_ISREG(before.st_mode) or _is_cloud_placeholder(before, path):
+        if not stat.S_ISREG(before.st_mode) or _is_cloud_placeholder(before):
             return None
         if self._should_abort_path(path):
             return None
@@ -4227,7 +4317,7 @@ class FullHashPreloader:
             before.st_size != after.st_size
             or before.st_mtime_ns != after.st_mtime_ns
             or not stat.S_ISREG(after.st_mode)
-            or _is_cloud_placeholder(after, path)
+            or _is_cloud_placeholder(after)
             or self._should_abort_path(path)
         ):
             return None
@@ -4417,7 +4507,7 @@ class FullHashPreloader:
         return entry[2] if entry else None
 
 
-def revalidate_file(path, expected_size, expected_mtime_ns, expected_hash, expected_hash_name):
+def revalidate_file(path, expected_size, expected_hash, expected_hash_name):
     try:
         file_stat = os.stat(path, follow_symlinks=False)
     except OSError:
@@ -4435,18 +4525,45 @@ def revalidate_file(path, expected_size, expected_mtime_ns, expected_hash, expec
     return True, ""
 
 
+def _full_hash_signature(path):
+    """Return the stat identity used to decide a cached digest is still current.
+
+    ctime is included on purpose: a writer can restore size and mtime, but not
+    the change time. On Windows st_ctime is the creation time, so that platform
+    relies on the size checks and the read itself.
+    """
+    try:
+        file_stat = os.stat(path, follow_symlinks=False)
+    except OSError:
+        return None
+    if not stat.S_ISREG(file_stat.st_mode):
+        return None
+    return (file_stat.st_size, file_stat.st_mtime_ns, file_stat.st_ctime_ns)
+
+
 def _cached_full_hash(path, cache, full_hash_reader=None):
-    if path not in cache:
-        reader = full_hash_reader or get_full_content_hash
-        cache[path] = reader(path)
-    return cache[path]
+    signature = _full_hash_signature(path)
+    if signature is None:
+        return None
+    entry = cache.get(path)
+    if entry is not None and entry[0] == signature:
+        return entry[1]
+    reader = full_hash_reader or get_full_content_hash
+    digest = reader(path)
+    if not digest:
+        return None
+    # A digest read while the file changed is worthless, even if the writer
+    # restored size and mtime before the second stat.
+    if _full_hash_signature(path) != signature:
+        return None
+    cache[path] = (signature, digest)
+    return digest
 
 
 def revalidate_selected_file_exact(path, info, group, selected_paths, full_hash_cache, full_hash_reader=None):
     valid, reason = revalidate_file(
         path,
         info.size,
-        info.mtime_ns,
         group.hash,
         group.hash_name,
     )
@@ -4458,12 +4575,18 @@ def revalidate_selected_file_exact(path, info, group, selected_paths, full_hash_
         for peer in group.files:
             if peer.path == path or peer.path in selected_paths:
                 continue
-            if peer.path not in full_hash_cache:
-                peer_valid, _peer_reason = revalidate_file(
-                    peer.path, peer.size, peer.mtime_ns, group.hash, group.hash_name
-                )
-                full_hash_cache[peer.path] = group.hash if peer_valid else None
-            if full_hash_cache[peer.path] == group.hash:
+            signature = _full_hash_signature(peer.path)
+            entry = full_hash_cache.get(peer.path)
+            if signature is not None and entry is not None and entry[0] == signature:
+                if entry[1] == group.hash:
+                    return True, ""
+                continue
+            peer_valid, _peer_reason = revalidate_file(
+                peer.path, peer.size, group.hash, group.hash_name
+            )
+            if peer_valid:
+                if signature is not None and _full_hash_signature(peer.path) == signature:
+                    full_hash_cache[peer.path] = (signature, group.hash)
                 return True, ""
         return False, "no exact kept duplicate"
 
@@ -4477,7 +4600,6 @@ def revalidate_selected_file_exact(path, info, group, selected_paths, full_hash_
         peer_valid, _peer_reason = revalidate_file(
             peer.path,
             peer.size,
-            peer.mtime_ns,
             group.hash,
             group.hash_name,
         )
@@ -4629,7 +4751,7 @@ def prompt_permanent_delete(
     if count > len(preview):
         print(f"      ... and {count - len(preview)} more")
     print()
-    if allow_slow_local_trash and CURRENT_OS != OS_WINDOWS:
+    if allow_slow_local_trash and CURRENT_OS == OS_MACOS:
         print("    Choose how to handle these items:")
         print("    " + paint("[p] Permanently delete them. This is irreversible", "danger") + " (like Finder's 'Delete Immediately').")
         print("    [l] Move them to a local trash fallback directory. This may be slow across the network.")
@@ -4637,14 +4759,14 @@ def prompt_permanent_delete(
         prompt = "Permanently delete, use local trash, or skip? [p/l/S]: "
     else:
         print("    " + paint("Permanently delete them? This is irreversible", "danger") + " (like Finder's 'Delete Immediately').")
-        if CURRENT_OS != OS_WINDOWS:
+        if CURRENT_OS == OS_MACOS:
             print(f"    Decline to skip these {item_label}s — pass --allow-slow-local-trash to use the local trash fallback instead.")
         prompt = "Permanently delete? [y/N]: "
     try:
         answer = input_func(prompt).strip().lower()
     except EOFError:
         return "skip"
-    if allow_slow_local_trash and CURRENT_OS != OS_WINDOWS and answer in ("l", "local", "trash", "local trash"):
+    if allow_slow_local_trash and CURRENT_OS == OS_MACOS and answer in ("l", "local", "trash", "local trash"):
         return "local"
     if answer in ("y", "yes", "p", "permanent", "delete"):
         return "permanent"
@@ -4653,11 +4775,10 @@ def prompt_permanent_delete(
 
 def move_to_local_trash(path):
     _ensure_no_symlink_replacement(path)
-    if CURRENT_OS == OS_WINDOWS:
+    if CURRENT_OS != OS_MACOS:
         raise OSError(
-            "Windows has no local trash fallback directory. "
-            "send2trash uses the Recycle Bin natively; if that failed, "
-            "the volume likely has no Recycle Bin support."
+            "The local trash fallback is only available on macOS (~/.Trash). "
+            "Other platforms have no equivalent directory this code can write to safely."
         )
     trash_dir = os.path.expanduser("~/.Trash")
     if not os.path.isdir(trash_dir):
@@ -5130,8 +5251,8 @@ def parse_args(argv):
         "--allow-slow-local-trash",
         action="store_true",
         help=(
-            "Allow the last-resort fallback that copies files into local "
-            "~/.Trash when the volume has no recycle bin. Slow for large or "
+            "Allow the last-resort fallback that copies files into ~/.Trash "
+            "when the volume has no recycle bin. macOS only; slow for large or "
             "remote files but keeps them recoverable."
         ),
     )
@@ -5165,7 +5286,10 @@ def parse_args(argv):
         action="store_true",
         help=argparse.SUPPRESS,
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.allow_slow_local_trash and CURRENT_OS != OS_MACOS:
+        parser.error("--allow-slow-local-trash is only supported on macOS (~/.Trash).")
+    return args
 
 
 def build_options(args):
