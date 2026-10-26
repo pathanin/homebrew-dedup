@@ -976,6 +976,33 @@ class ThumbnailShutdownTests(unittest.TestCase):
         for child in children:
             self.assertIsNotNone(child.poll(), "ffmpeg child survived shutdown")
 
+    def test_render_terminates_child_registered_after_shutdown_started(self):
+        path = self._make_media_file()
+        script = self._slow_ffmpeg()
+        stop_event = threading.Event()
+        processes = []
+        real_popen = subprocess.Popen
+
+        def start_then_stop(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            processes.append(process)
+            # Shutdown runs between Popen returning and render_thumbnail
+            # registering the child.
+            stop_event.set()
+            return process
+
+        started = time.monotonic()
+        with mock.patch.object(dedup, "FFMPEG_PATH", script), \
+                mock.patch.object(dedup, "get_media_kind", return_value="image"), \
+                mock.patch.object(dedup.subprocess, "Popen", side_effect=start_then_stop):
+            body = dedup.render_thumbnail(path, stop_event=stop_event)
+        elapsed = time.monotonic() - started
+
+        self.assertIsNone(body)
+        self.assertLess(elapsed, 5)
+        self.assertEqual(len(processes), 1)
+        self.assertIsNotNone(processes[0].poll(), "ffmpeg child survived the shutdown race")
+
     def test_warm_thumbnails_does_not_start_renders_after_stop(self):
         groups = [{"files": [{"path": "/videos/clip.mp4"}]}]
         stop_event = threading.Event()
@@ -1542,7 +1569,12 @@ class TrashSafetyTests(unittest.TestCase):
                 file_obj.write(b"old")
             preloader = dedup.FullHashPreloader([])
             old_stat = os.stat(path)
-            preloader.cache[path] = (old_stat.st_size, old_stat.st_mtime_ns, "stale")
+            preloader.cache[path] = (
+                old_stat.st_size,
+                old_stat.st_mtime_ns,
+                old_stat.st_ctime_ns,
+                "stale",
+            )
 
             with open(path, "wb") as file_obj:
                 file_obj.write(b"new content")
@@ -1552,6 +1584,96 @@ class TrashSafetyTests(unittest.TestCase):
 
         self.assertNotEqual(digest, "stale")
         self.assertEqual(digest, expected)
+
+    @unittest.skipIf(
+        os.name == "nt",
+        "Windows st_ctime is creation time, so a same-size in-place rewrite is "
+        "indistinguishable from an untouched file; the size checks cover it",
+    )
+    def test_full_hash_preloader_recomputes_hash_after_rewrite_with_restored_mtime(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path_a = os.path.join(temp_dir, "a.bin")
+            path_b = os.path.join(temp_dir, "b.bin")
+            size = 4096
+            for path, body in ((path_a, b"A" * size), (path_b, b"B" * size)):
+                with open(path, "wb") as file_obj:
+                    file_obj.write(body)
+            group = dedup.DuplicateGroup(
+                dedup.get_fast_multichunk_hash(path_a, size),
+                (
+                    dedup.FileInfo(path_a, size, os.stat(path_a).st_mtime_ns),
+                    dedup.FileInfo(path_b, size, os.stat(path_b).st_mtime_ns),
+                ),
+                "fast-test",
+            )
+            preloader = dedup.FullHashPreloader([group])
+            old_digest = preloader.get(path_a)
+            self.assertEqual(old_digest, dedup.get_full_content_hash(path_a))
+
+            original = os.stat(path_a)
+            with open(path_a, "wb") as file_obj:
+                file_obj.write(b"C" * size)
+            os.utime(path_a, ns=(original.st_atime_ns, original.st_mtime_ns))
+            self.assertEqual(os.stat(path_a).st_size, original.st_size)
+            self.assertEqual(os.stat(path_a).st_mtime_ns, original.st_mtime_ns)
+
+            new_digest = preloader.get(path_a)
+
+            self.assertNotEqual(new_digest, old_digest)
+            self.assertEqual(new_digest, dedup.get_full_content_hash(path_a))
+
+    @unittest.skipIf(
+        os.name == "nt",
+        "Windows st_ctime is creation time, so a same-size in-place rewrite is "
+        "indistinguishable from an untouched file; the size checks cover it",
+    )
+    def test_fast_mode_recheck_rejects_peer_rewritten_with_restored_mtime(self):
+        """The preloader cache must not vouch for a peer whose ctime changed.
+
+        The rewrite keeps the size and restores the mtime and the sampled
+        bytes, so only the ctime check can reveal it.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path_a, path_b, size = self.make_sparse_collision_pair(temp_dir)
+            with open(path_a, "rb") as file_obj:
+                base_body = file_obj.read()
+            with open(path_b, "rb") as file_obj:
+                differing_body = file_obj.read()
+            # Start from exact duplicates so the primed digests match.
+            with open(path_b, "wb") as file_obj:
+                file_obj.write(base_body)
+
+            group = dedup.DuplicateGroup(
+                dedup.get_fast_multichunk_hash(path_a, size),
+                (
+                    dedup.FileInfo(path_a, size, os.stat(path_a).st_mtime_ns),
+                    dedup.FileInfo(path_b, size, os.stat(path_b).st_mtime_ns),
+                ),
+                "fast-test",
+            )
+            preloader = dedup.FullHashPreloader([group])
+            self.assertEqual(preloader.get(path_a), preloader.get(path_b))
+
+            original = os.stat(path_a)
+            with open(path_a, "wb") as file_obj:
+                file_obj.write(differing_body)
+            os.utime(path_a, ns=(original.st_atime_ns, original.st_mtime_ns))
+            self.assertEqual(os.stat(path_a).st_size, original.st_size)
+            self.assertEqual(os.stat(path_a).st_mtime_ns, original.st_mtime_ns)
+
+            valid, reason = dedup.revalidate_selected_file_exact(
+                path_b,
+                dedup.FileInfo(path_b, size, os.stat(path_b).st_mtime_ns),
+                group,
+                {path_b},
+                {},
+                full_hash_reader=preloader.get,
+            )
+
+            self.assertFalse(valid)
+            self.assertEqual(reason, "no exact kept duplicate")
+            self.assertTrue(os.path.exists(path_a))
+            self.assertTrue(os.path.exists(path_b))
 
     def test_trash_files_uses_trash_cmd_fallback_for_macos_volume(self):
         path = "/Volumes/Storage/Movies/test.mp4"
