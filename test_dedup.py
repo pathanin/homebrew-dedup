@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.request
 from http.server import ThreadingHTTPServer
@@ -109,9 +110,21 @@ class CliTests(unittest.TestCase):
         self.assertFalse(args.allow_slow_local_trash)
 
     def test_allow_slow_local_trash_flag_enables_last_resort(self):
-        args = dedup.parse_args(["--allow-slow-local-trash", "."])
+        with mock.patch.object(dedup, "CURRENT_OS", dedup.OS_MACOS):
+            args = dedup.parse_args(["--allow-slow-local-trash", "."])
 
         self.assertTrue(args.allow_slow_local_trash)
+
+    def test_allow_slow_local_trash_rejected_off_macos(self):
+        for platform in (dedup.OS_LINUX, dedup.OS_WINDOWS, dedup.OS_OTHER):
+            with self.subTest(platform=platform):
+                stderr = io.StringIO()
+                with mock.patch.object(dedup, "CURRENT_OS", platform):
+                    with contextlib.redirect_stderr(stderr):
+                        with self.assertRaises(SystemExit) as ctx:
+                            dedup.parse_args(["--allow-slow-local-trash", "."])
+                self.assertEqual(ctx.exception.code, 2)
+                self.assertIn("macOS", stderr.getvalue())
 
     def test_permanent_on_no_trash_defaults_to_false(self):
         args = dedup.parse_args(["."])
@@ -912,6 +925,87 @@ class BrowserHelperTests(unittest.TestCase):
             self.assertEqual(set(started), set(paths))
 
 
+@unittest.skipIf(os.name == "nt" or not shutil.which("sh"), "needs a POSIX shell")
+class ThumbnailShutdownTests(unittest.TestCase):
+    def _make_media_file(self):
+        fd, path = tempfile.mkstemp(suffix=".jpg")
+        os.write(fd, b"image")
+        os.close(fd)
+        self.addCleanup(os.unlink, path)
+        return path
+
+    def _slow_ffmpeg(self):
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory, True)
+        script = os.path.join(directory, "ffmpeg-slow.sh")
+        with open(script, "w", encoding="utf-8") as file_obj:
+            file_obj.write("#!/bin/sh\nsleep 30\n")
+        os.chmod(script, 0o755)
+        return script
+
+    def test_shutdown_terminates_live_renders(self):
+        path = self._make_media_file()
+        cache = dedup.ThumbnailCache()
+        cache_lock = threading.Lock()
+        in_flight = {}
+        stop_event = threading.Event()
+        script = self._slow_ffmpeg()
+
+        with mock.patch.object(dedup, "FFMPEG_PATH", script), \
+                mock.patch.object(dedup, "get_media_kind", return_value="image"):
+            thread = threading.Thread(
+                target=dedup.get_thumbnail_threadsafe,
+                args=(path, cache, cache_lock, in_flight),
+                kwargs={"stop_event": stop_event},
+            )
+            thread.start()
+            deadline = time.monotonic() + 5
+            while not dedup._THUMBNAIL_CHILDREN and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(dedup._THUMBNAIL_CHILDREN, "ffmpeg child never started")
+            children = list(dedup._THUMBNAIL_CHILDREN)
+
+            stop_event.set()
+            started = time.monotonic()
+            dedup.terminate_thumbnail_subprocesses(timeout=2)
+            elapsed = time.monotonic() - started
+            thread.join(timeout=5)
+
+        self.assertLess(elapsed, 5)
+        self.assertFalse(thread.is_alive())
+        for child in children:
+            self.assertIsNotNone(child.poll(), "ffmpeg child survived shutdown")
+
+    def test_warm_thumbnails_does_not_start_renders_after_stop(self):
+        groups = [{"files": [{"path": "/videos/clip.mp4"}]}]
+        stop_event = threading.Event()
+        stop_event.set()
+
+        with mock.patch.object(dedup, "get_thumbnail_threadsafe") as render:
+            dedup._warm_thumbnails(
+                dedup.ThumbnailCache(), threading.Lock(), {}, groups, stop_event
+            )
+
+        render.assert_not_called()
+
+    def test_threadsafe_thumbnail_respects_stop_before_rendering(self):
+        path = self._make_media_file()
+        stop_event = threading.Event()
+        stop_event.set()
+
+        with mock.patch.object(dedup, "render_thumbnail") as render:
+            body = dedup.get_thumbnail_threadsafe(
+                path,
+                dedup.ThumbnailCache(),
+                threading.Lock(),
+                {},
+                stop_event=stop_event,
+            )
+
+        self.assertIsNone(body)
+        render.assert_not_called()
+
+
 def _extract_js_function(html, name):
     start = html.index(f"function {name}(")
     depth = 0
@@ -1009,7 +1103,6 @@ class TrashSafetyTests(unittest.TestCase):
             valid, reason = dedup.revalidate_file(
                 path,
                 file_stat.st_size,
-                file_stat.st_mtime_ns,
                 expected_hash,
                 dedup.FULL_HASH_NAME,
             )
@@ -1029,7 +1122,6 @@ class TrashSafetyTests(unittest.TestCase):
             valid, reason = dedup.revalidate_file(
                 path,
                 file_stat.st_size,
-                file_stat.st_mtime_ns,
                 expected_hash,
                 dedup.FULL_HASH_NAME,
             )
@@ -1166,6 +1258,88 @@ class TrashSafetyTests(unittest.TestCase):
         self.assertEqual(result.skipped, 1)
         self.assertIn("no exact kept duplicate", errors.getvalue())
         self.assertTrue(os.path.exists(copy))
+
+    def recheck_after_prime(self, cache, copy, group):
+        return dedup.revalidate_selected_file_exact(
+            copy,
+            dedup.FileInfo(copy, os.path.getsize(copy), os.stat(copy).st_mtime_ns),
+            group,
+            {copy},
+            cache,
+        )
+
+    @unittest.skipIf(
+        os.name == "nt",
+        "Windows st_ctime is creation time, so a same-size in-place rewrite is "
+        "indistinguishable from an untouched file; the size checks cover the "
+        "rest",
+    )
+    def test_recheck_rejects_peer_rewritten_with_restored_mtime(self):
+        """The cache must not vouch for a peer whose bytes changed after priming.
+
+        Size and mtime are restored, so only ctime reveals the write.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            keep, copy, group = self.make_full_hash_pair(temp_dir)
+            cache = {}
+
+            self.assertTrue(self.recheck_after_prime(cache, copy, group)[0])
+
+            original = os.stat(keep)
+            with open(keep, "wb") as file_obj:
+                file_obj.write(b"diff content")  # same length as b"same content"
+            os.utime(keep, ns=(original.st_atime_ns, original.st_mtime_ns))
+            self.assertEqual(os.stat(keep).st_size, original.st_size)
+
+            valid, reason = self.recheck_after_prime(cache, copy, group)
+
+            self.assertFalse(valid)
+            self.assertEqual(reason, "no exact kept duplicate")
+            self.assertTrue(os.path.exists(copy))
+            self.assertTrue(os.path.exists(keep))
+
+    def test_recheck_rejects_peer_whose_size_changed_after_prime(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            keep, copy, group = self.make_full_hash_pair(temp_dir)
+            cache = {}
+
+            self.assertTrue(self.recheck_after_prime(cache, copy, group)[0])
+
+            with open(keep, "ab") as file_obj:
+                file_obj.write(b"!")
+
+            valid, reason = self.recheck_after_prime(cache, copy, group)
+
+            self.assertFalse(valid)
+            self.assertEqual(reason, "no exact kept duplicate")
+            self.assertTrue(os.path.exists(copy))
+            self.assertTrue(os.path.exists(keep))
+
+    def test_recheck_treats_missing_peer_as_no_duplicate(self):
+        """A stat failure while reading the cache means do not trash."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            keep, copy, group = self.make_full_hash_pair(temp_dir)
+            cache = {}
+
+            self.assertTrue(self.recheck_after_prime(cache, copy, group)[0])
+
+            os.remove(keep)
+
+            valid, reason = self.recheck_after_prime(cache, copy, group)
+
+            self.assertFalse(valid)
+            self.assertEqual(reason, "no exact kept duplicate")
+            self.assertTrue(os.path.exists(copy))
+
+    def test_cached_full_hash_rejects_missing_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = os.path.join(temp_dir, "gone.bin")
+            with open(path, "wb") as file_obj:
+                file_obj.write(b"bytes")
+            cache = {}
+            self.assertIsNotNone(dedup._cached_full_hash(path, cache))
+            os.remove(path)
+            self.assertIsNone(dedup._cached_full_hash(path, cache))
 
     def test_full_hash_selection_requires_kept_copy_to_still_exist(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1705,11 +1879,13 @@ class TrashSafetyTests(unittest.TestCase):
         self.assertIn("send2trash failed", msg)
         self.assertIn("platform trash fallback failed", msg)
 
-    def test_move_to_local_trash_raises_on_windows(self):
-        with mock.patch.object(dedup, "CURRENT_OS", dedup.OS_WINDOWS):
-            with self.assertRaises(OSError) as ctx:
-                dedup.move_to_local_trash("/some/file.txt")
-            self.assertIn("Windows has no local trash fallback", str(ctx.exception))
+    def test_move_to_local_trash_raises_off_macos(self):
+        for platform in (dedup.OS_WINDOWS, dedup.OS_LINUX, dedup.OS_OTHER):
+            with self.subTest(platform=platform):
+                with mock.patch.object(dedup, "CURRENT_OS", platform):
+                    with self.assertRaises(OSError) as ctx:
+                        dedup.move_to_local_trash("/some/file.txt")
+                    self.assertIn("only available on macOS", str(ctx.exception))
 
     def test_prompt_permanent_delete_hides_local_option_on_windows(self):
         """On Windows, prompt_permanent_delete must never offer [l] even when
@@ -1724,6 +1900,20 @@ class TrashSafetyTests(unittest.TestCase):
             )
         # "l" must not be accepted — safe default is "skip"
         self.assertEqual(result, "skip")
+
+    def test_prompt_permanent_delete_hides_local_option_on_linux(self):
+        """Linux has no ~/.Trash either, so [l] must not be offered there."""
+        output_lines = []
+        with mock.patch.object(dedup, "CURRENT_OS", dedup.OS_LINUX):
+            with mock.patch("builtins.print", side_effect=lambda *a, **k: output_lines.append(" ".join(str(x) for x in a))):
+                result = dedup.prompt_permanent_delete(
+                    volume_root="/mnt/data",
+                    files_on_volume=["/mnt/data/a.txt"],
+                    input_func=lambda _: "l",
+                    allow_slow_local_trash=True,
+                )
+        self.assertEqual(result, "skip")
+        self.assertNotIn("[l]", "\n".join(output_lines))
 
     def test_prompt_permanent_delete_no_local_suggestion_on_windows(self):
         """On Windows the --allow-slow-local-trash hint must not be printed."""
@@ -1870,7 +2060,7 @@ class VolumeHelperTests(unittest.TestCase):
                 with self.assertRaises(OSError) as caught:
                     dedup.move_to_local_trash(source)
 
-            self.assertIn("Recycle Bin", str(caught.exception))
+            self.assertIn("only available on macOS", str(caught.exception))
             # Refusing must never consume the file.
             self.assertTrue(os.path.exists(source))
 
@@ -2320,6 +2510,54 @@ class RangeRequestTests(unittest.TestCase):
             self.assertEqual(response.status, 404)
         finally:
             conn.close()
+
+
+class ThumbnailResponseTests(unittest.TestCase):
+    def _start_server(self, suffix=".jpg", body=b"X" * 100):
+        fd, path = tempfile.mkstemp(suffix=suffix)
+        os.write(fd, body)
+        os.close(fd)
+        self.addCleanup(os.unlink, path)
+        group = dedup.DuplicateGroup(
+            "abc",
+            (dedup.FileInfo(path, os.path.getsize(path), 1),),
+        )
+        state = dedup.BrowserSelectionState([group])
+        try:
+            server = ThreadingHTTPServer(("127.0.0.1", 0), dedup.make_browser_handler(state))
+        except PermissionError:
+            self.skipTest("loopback bind not permitted")
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        server.dedup_token = state.session_id
+
+        def _cleanup():
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+        self.addCleanup(_cleanup)
+        with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/api/groups?token={state.session_id}") as resp:
+            file_id = json.loads(resp.read().decode("utf-8"))["groups"][0]["files"][0]["id"]
+        return server, file_id
+
+    def test_thumbnail_response_is_cacheable(self):
+        # Rendering needs ffmpeg, so stub the renderer and assert the headers.
+        server, file_id = self._start_server()
+        with mock.patch.object(dedup, "get_thumbnail_threadsafe", return_value=b"jpeg"):
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{server.server_port}/thumb/{file_id}?token={server.dedup_token}"
+            ) as response:
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.getheader("Cache-Control"), "public, max-age=3600")
+
+    def test_media_response_stays_uncached(self):
+        server, file_id = self._start_server()
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{server.server_port}/media/{file_id}?token={server.dedup_token}"
+        ) as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(response.getheader("Cache-Control"), "no-store")
 
 
 class DoubleSubmitGuardTests(unittest.TestCase):
