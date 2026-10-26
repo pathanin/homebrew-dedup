@@ -126,17 +126,27 @@ The remaining guards reject input that never appears in normal use, so no ordina
 
 ## Color palette (CSS custom properties)
 
-Defined in `_SHARED_CSS`. Zinc/slate neutral scale, system-preference dark mode only (no toggle).
+Defined in `_SHARED_CSS`. Flat / hairline style: pure neutral grays (no warm or blue tint), expressed as black (light) or white (dark) at an alpha so they layer on any surface. Layers are separated by 1px hairlines and low-alpha tints; shadows only on floating things (modals, the dir-picker), always with a 1px ring. System-preference dark mode only (no toggle).
+
+Primary tokens:
 
 | Variable | Light | Dark |
 |---|---|---|
-| `--bg` | `#fafafa` | `#09090b` |
-| `--panel` | `#ffffff` | `#18181b` |
-| `--text` | `#18181b` | `#fafafa` |
-| `--muted` | `#71717a` | `#a1a1aa` |
-| `--line` | `#e4e4e7` | `#27272a` |
-| `--surface` | `#f4f4f5` | `#27272a` |
+| `--bg-page` | `#ffffff` | `#161616` |
+| `--bg-sidebar` | `#fafafa` | `#111111` |
+| `--bg-raised` | `#ffffff` | `#1f1f1f` |
+| `--text-primary` | `rgba(0,0,0,.90)` | `rgba(255,255,255,.92)` |
+| `--text-secondary` | `rgba(0,0,0,.60)` | `rgba(255,255,255,.64)` |
+| `--text-muted` | `rgba(0,0,0,.47)` | `rgba(255,255,255,.48)` |
+| `--border` | `rgba(0,0,0,.08)` | `rgba(255,255,255,.10)` |
+| `--border-strong` | `rgba(0,0,0,.10)` | `rgba(255,255,255,.12)` |
+| `--tint-hover` | `rgba(0,0,0,.05)` | `rgba(255,255,255,.06)` |
+| `--tint-selected` | `rgba(0,0,0,.10)` | `rgba(255,255,255,.12)` |
 | `--keep` | `#16a34a` | `#22c55e` |
 | `--danger` | `#dc2626` | `#ef4444` |
+
+`--keep-bg`/`--keep-border` and `--danger-bg`/`--danger-border` are the semantic color at a low alpha. Radius (`--radius-md` 6px controls, `--radius` 8px inputs/tiles, `--radius-xl` 12px cards/popovers, `--radius-composer` 14px modals), shadow (`--shadow-panel`, `--shadow-sm`), weight and motion (`--dur-fast` 60ms press, `--dur` 200ms color) tokens sit in the same block.
+
+The older names are aliases that page CSS and inline `style="…"` attributes in JS templates still use: `--bg` → `--bg-sidebar`, `--panel` → `--bg-page`, `--text` → `--text-primary`, `--muted` → `--text-secondary`, `--line` → `--border`, `--hover-tint` → `--tint-hover`. `--surface` is a 4–5% alpha tint, so anything sticky over scrolling content (e.g. `#listViewHeader`) must composite it on an opaque `var(--panel)`. Keep `--text-muted` for placeholders and faint glyphs only; it is under 4.5:1 on white.
 
 Semantic green/red only. No other accent color.

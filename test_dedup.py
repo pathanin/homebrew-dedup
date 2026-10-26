@@ -684,10 +684,15 @@ class BrowserHelperTests(unittest.TestCase):
     def test_pages_use_system_font_and_palette_only_badges(self):
         for html in (dedup.build_browser_html(), dedup.build_empty_dirs_html()):
             self.assertNotIn('"Inter"', html)
-            self.assertIn("font: 13px/1.5 system-ui,", html)
+            self.assertIn("font: 14px/20px system-ui,", html)
         html = dedup.build_browser_html()
         for color in ("#fef9c3", "#854d0e", "#dbeafe", "#1d4ed8", "#422006", "#1e3a5f"):
             self.assertNotIn(color, html)
+
+    def test_sticky_list_header_stays_opaque_over_translucent_surface(self):
+        html = dedup.build_browser_html()
+        self.assertIn("--surface: rgba(", html)
+        self.assertIn("#listViewHeader { display: none; position: sticky; top: 0; z-index: 5; background: linear-gradient(var(--surface), var(--surface)), var(--panel);", html)
 
     def test_empty_dirs_html_posts_effective_selection(self):
         html = dedup.build_empty_dirs_html()
